@@ -1,0 +1,64 @@
+name: Build Kid Mode UI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - claude/onion-kid-mode-launcher-psewag
+    paths:
+      - 'src/kidsMode/**'
+      - '.github/workflows/build-kidmode.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Cross-compile kidui
+    runs-on: ubuntu-latest
+    container:
+      image: aemiii91/miyoomini-toolchain:latest
+      options: --user root
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Build
+        shell: bash
+        run: |
+          source /root/.bashrc
+          cd src/kidsMode
+          make
+          file kidui || true
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kidui
+          path: src/kidsMode/kidui
+          if-no-files-found: error
+
+  commit:
+    name: Commit binary to branch
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kidui
+          path: kidmode-sd/App/KidsMode/bin
+      - name: Commit and push
+        run: |
+          chmod +x kidmode-sd/App/KidsMode/bin/kidui
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add kidmode-sd/App/KidsMode/bin/kidui
+          if git diff --cached --quiet; then
+            echo "Binary unchanged; nothing to commit."
+            exit 0
+          fi
+          git commit -m "Add built kidui ARM binary [skip ci]"
+          git push
