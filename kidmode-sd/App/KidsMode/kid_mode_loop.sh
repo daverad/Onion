@@ -332,6 +332,25 @@ is_game_cmd() {
     grep -q "retroarch/cores\|/../../Roms/\|/mnt/SDCARD/Roms/" "$1" 2> /dev/null
 }
 
+# --------------------------- boot hook install -----------------------------
+# The startup hook ships inside the app folder and is (re)installed on every
+# arm, so installing Kid Mode is just copying App/KidsMode onto the card —
+# no manual edits inside the hidden .tmp_update folder.
+
+hook_src="$appdir/kidmode_boot.sh"
+hook_dst="$sysdir/startup/kidmode_boot.sh"
+
+install_hook() {
+    [ -f "$hook_src" ] || return 1
+    mkdir -p "$sysdir/startup"
+    if ! cmp -s "$hook_src" "$hook_dst" 2> /dev/null; then
+        cp "$hook_src" "$hook_dst"
+        sync
+        log "Boot hook installed to $hook_dst"
+    fi
+    return 0
+}
+
 # ------------------------------ unlock -------------------------------------
 
 disarm() {
@@ -426,6 +445,11 @@ cmd_arm() {
     [ -f "$favfile" ] && fav_count=$(grep -c "rompath" "$favfile" 2> /dev/null)
     if [ "$fav_count" -eq 0 ]; then
         infoPanel -t "Kid Mode" -m "No favorites found.\nAdd some favorites first,\nthen arm Kid Mode." --auto
+        return 1
+    fi
+
+    if ! install_hook; then
+        infoPanel -t "Kid Mode" -m "kidmode_boot.sh is missing.\nReinstall the KidsMode app." --auto
         return 1
     fi
 

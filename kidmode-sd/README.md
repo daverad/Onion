@@ -25,7 +25,9 @@ an interception point:
 - `.tmp_update/startup/kidmode_boot.sh` — Onion runs everything in the
   startup folder *before* launching MainUI. When armed, this blocks in the
   kid launcher loop, so MainUI simply never starts until the PIN unlock
-  removes the flag and the script returns.
+  removes the flag and the script returns. (The hook is installed there
+  automatically from `App/KidsMode/kidmode_boot.sh` on first arm — you
+  never edit `.tmp_update` by hand.)
 - `App/KidsMode/bin/kidui` — small SDL app (built with Onion's toolchain)
   that renders the carousel and the PIN pad. It reads Onion's own favorites
   file (`Roms/favourite.json`), so adding/removing favorites in normal Onion
@@ -41,12 +43,9 @@ applied on arm) — a backup is taken first and restored on unlock.
 
 ## Install
 
-Copy onto the SD card (keeping paths):
-
-| From this folder                        | To on the SD card                                    |
-| --------------------------------------- | ---------------------------------------------------- |
-| `App/KidsMode/`                          | `/mnt/SDCARD/App/KidsMode/`                          |
-| `.tmp_update/startup/kidmode_boot.sh`    | `/mnt/SDCARD/.tmp_update/startup/kidmode_boot.sh`    |
+Copy the `App/KidsMode/` folder into the `App/` folder on the SD card, so
+you end up with `/mnt/SDCARD/App/KidsMode/`. That's it — the boot hook
+self-installs the first time you arm Kid Mode.
 
 Make sure `App/KidsMode/bin/kidui` is present (it is committed to this
 folder by the `Build Kid Mode UI` GitHub workflow; see "Rebuilding" below).

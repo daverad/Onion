@@ -4,8 +4,11 @@
 # flag is present this blocks here in the kid launcher loop; MainUI only
 # starts after a successful PIN unlock removed the flag.
 #
-# Recovery from a computer: delete /mnt/SDCARD/.kidmode (or this file) and
-# the device boots normal Onion again.
+# This file ships in App/KidsMode/ and is copied into .tmp_update/startup/
+# automatically the first time Kid Mode is armed (see kid_mode_loop.sh).
+#
+# Recovery from a computer: delete /mnt/SDCARD/.kidmode (or the copy of
+# this file in .tmp_update/startup/) and the device boots normal Onion.
 
 flagfile=/mnt/SDCARD/.kidmode
 looper=/mnt/SDCARD/App/KidsMode/kid_mode_loop.sh
