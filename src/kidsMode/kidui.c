@@ -591,7 +591,7 @@ int main(int argc, char *argv[])
                         quit = true;
                     }
                     else {
-                        active_screen = remaining == 0 ? SCREEN_TIMESUP
+                        active_screen = remaining == 0    ? SCREEN_TIMESUP
                                         : games_count > 0 ? SCREEN_CAROUSEL
                                                           : SCREEN_EMPTY;
                         pin_digits[0] = pin_digits[1] = pin_digits[2] =
@@ -638,9 +638,9 @@ int main(int argc, char *argv[])
         // PIN screen idle timeout back to the kid screen (not in set-pin mode)
         if (!set_pin_mode && active_screen == SCREEN_PIN &&
             ticks - pin_last_input > PIN_IDLE_TIMEOUT_MS) {
-            active_screen = remaining == 0        ? SCREEN_TIMESUP
-                            : games_count > 0     ? SCREEN_CAROUSEL
-                                                  : SCREEN_EMPTY;
+            active_screen = remaining == 0    ? SCREEN_TIMESUP
+                            : games_count > 0 ? SCREEN_CAROUSEL
+                                              : SCREEN_EMPTY;
             pin_digits[0] = pin_digits[1] = pin_digits[2] = pin_digits[3] = 0;
             pin_cursor = 0;
             dirty = true;
