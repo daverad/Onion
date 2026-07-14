@@ -4,11 +4,13 @@
 // at a time: big box art, big label, left/right to browse, A to play.
 // Holding SELECT+START for 3 seconds opens a 4-digit PIN entry.
 //
-// Output protocol (stdout, consumed by kid_mode_loop.sh):
+// Output protocol (written to /tmp/kidmode_ui_result, consumed by
+// kid_mode_loop.sh; stdout is NOT used for results because the device's
+// SDL/driver stack prints noise there):
 //   exit 0:  "LAUNCH" \n <launch path> \n <rom path>
 //   exit 3:  "PIN" \n <4 digits>
 //   exit 5:  "MENU" \n <UNLOCK|BONUS|TIMER> [\n <minutes>]
-//   exit 1:  canceled / error / nothing selected
+//   exit 1:  canceled / error / nothing selected (result file removed)
 //
 // Modes:
 //   kidui                          carousel (default)
@@ -47,6 +49,7 @@
 #define PIN_IDLE_TIMEOUT_MS 30000
 #define REMAINING_POLL_MS 2000
 #define REMAINING_FILE "/tmp/kidmode_remaining"
+#define RESULT_FILE "/tmp/kidmode_ui_result"
 #define FONT_MAIN "/customer/app/Exo-2-Bold-Italic.ttf"
 #define FONT_FALLBACK "/mnt/SDCARD/miyoo/app/Exo-2-Bold-Italic.ttf"
 
@@ -82,6 +85,21 @@ static const SDL_Color COLOR_ACCENT = {255, 200, 60};
 static const uint32_t BG_COLOR = 0x1A1B26;      // dark navy
 static const uint32_t PIN_BOX_COLOR = 0x2E3350; // slate
 static const uint32_t PIN_BOX_ACTIVE = 0x4A5480;
+
+// Results go through a file: stdout is unreliable on-device (SDL/driver
+// messages land there ahead of anything we print).
+static void writeResult(const char *l1, const char *l2, const char *l3)
+{
+    FILE *fp = fopen(RESULT_FILE, "w");
+    if (fp == NULL)
+        return;
+    fprintf(fp, "%s\n", l1);
+    if (l2 != NULL)
+        fprintf(fp, "%s\n", l2);
+    if (l3 != NULL)
+        fprintf(fp, "%s\n", l3);
+    fclose(fp);
+}
 
 static void sigHandler(int sig)
 {
@@ -436,6 +454,7 @@ int main(int argc, char *argv[])
     signal(SIGTERM, sigHandler);
 
     log_setName("kidui");
+    remove(RESULT_FILE); // no stale results from a previous run
 
     if (!SDL_InitDefault())
         return 1;
@@ -494,8 +513,8 @@ int main(int argc, char *argv[])
                     dirty = true;
                     break;
                 case SW_BTN_A:
-                    printf("LAUNCH\n%s\n%s\n", games[current].launch,
-                           games[current].rompath);
+                    writeResult("LAUNCH", games[current].launch,
+                                games[current].rompath);
                     exit_code = 0;
                     quit = true;
                     break;
@@ -533,17 +552,20 @@ int main(int argc, char *argv[])
                     break;
                 case SW_BTN_A:
                     if (menu_selected == MENU_UNLOCK) {
-                        printf("MENU\nUNLOCK\n");
+                        writeResult("MENU", "UNLOCK", NULL);
                         exit_code = 5;
                         quit = true;
                     }
                     else if (menu_selected == MENU_BONUS) {
-                        printf("MENU\nBONUS\n");
+                        writeResult("MENU", "BONUS", NULL);
                         exit_code = 5;
                         quit = true;
                     }
                     else if (menu_selected == MENU_TIMER) {
-                        printf("MENU\nTIMER\n%d\n", menu_timer_minutes);
+                        char minutes_str[16];
+                        snprintf(minutes_str, sizeof(minutes_str), "%d",
+                                 menu_timer_minutes);
+                        writeResult("MENU", "TIMER", minutes_str);
                         exit_code = 5;
                         quit = true;
                     }
@@ -579,12 +601,16 @@ int main(int argc, char *argv[])
                     dirty = true;
                     break;
                 case SW_BTN_A:
-                case SW_BTN_START:
-                    printf("PIN\n%d%d%d%d\n", pin_digits[0], pin_digits[1],
-                           pin_digits[2], pin_digits[3]);
+                case SW_BTN_START: {
+                    char pin_str[8];
+                    snprintf(pin_str, sizeof(pin_str), "%d%d%d%d",
+                             pin_digits[0], pin_digits[1], pin_digits[2],
+                             pin_digits[3]);
+                    writeResult("PIN", pin_str, NULL);
                     exit_code = 3;
                     quit = true;
                     break;
+                }
                 case SW_BTN_B:
                     if (set_pin_mode) {
                         exit_code = 1;

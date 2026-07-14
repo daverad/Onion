@@ -30,13 +30,17 @@ flagfile=/mnt/SDCARD/.kidmode
 favfile=/mnt/SDCARD/Roms/favourite.json
 racfg=/mnt/SDCARD/RetroArch/.retroarch/retroarch.cfg
 rabackup="$appdir/retroarch.cfg.kidmode-backup"
-uiout=/tmp/kidmode_ui_out
 logfile=/mnt/SDCARD/.tmp_update/logs/kidmode.log
 
 timer_state="$appdir/timer_state.txt" # 3 lines: day / used seconds / bonus seconds
 remaining_file=/tmp/kidmode_remaining
 ticker_pid_file=/tmp/kidmode_ticker.pid
 badge_dir="$appdir/res"
+
+# kidui reports results via this file, NOT stdout — the device's SDL/driver
+# stack prints noise on stdout, which broke first-line parsing on hardware.
+uiresult=/tmp/kidmode_ui_result
+uilog=/tmp/kidmode_ui_log
 
 export LD_LIBRARY_PATH="/lib:/config/lib:$miyoodir/lib:$sysdir/lib:$sysdir/lib/parasyte"
 export PATH="$sysdir/bin:$PATH"
@@ -144,12 +148,12 @@ verify_pin() {
 
 run_pin_entry() {
     # $1 = title; echoes the PIN on success
-    rm -f "$uiout"
-    "$kidui_bin" --set-pin -t "$1" > "$uiout"
+    rm -f "$uiresult"
+    "$kidui_bin" --set-pin -t "$1" > "$uilog" 2>&1
     [ $? -eq 3 ] || return 1
-    [ "$(sed -n 1p "$uiout")" = "PIN" ] || return 1
-    entered="$(sed -n 2p "$uiout")"
-    rm -f "$uiout"
+    [ "$(sed -n 1p "$uiresult")" = "PIN" ] || return 1
+    entered="$(sed -n 2p "$uiresult")"
+    rm -f "$uiresult"
     is_4_digits "$entered" || return 1
     printf '%s\n' "$entered"
 }
@@ -561,27 +565,27 @@ ensure_fav_shortcut() {
 
 parent_menu() {
     while :; do
-        rm -f "$uiout"
+        rm -f "$uiresult"
         "$kidui_bin" --parent-menu --timer "$(get_timer_minutes)" \
-            --remaining "$(timer_remaining)" > "$uiout"
+            --remaining "$(timer_remaining)" > "$uilog" 2>&1
         menu_rc=$?
 
-        if [ "$menu_rc" -ne 5 ] || [ "$(sed -n 1p "$uiout")" != "MENU" ]; then
-            rm -f "$uiout"
+        if [ "$menu_rc" -ne 5 ] || [ "$(sed -n 1p "$uiresult")" != "MENU" ]; then
+            rm -f "$uiresult"
             return 1
         fi
 
-        menu_action="$(sed -n 2p "$uiout")"
+        menu_action="$(sed -n 2p "$uiresult")"
+        menu_val="$(sed -n 3p "$uiresult")"
+        rm -f "$uiresult"
         case "$menu_action" in
             UNLOCK)
-                rm -f "$uiout"
                 return 0
                 ;;
             BONUS)
                 add_bonus 300
                 ;;
             TIMER)
-                menu_val="$(sed -n 3p "$uiout")"
                 case "$menu_val" in
                     '' | *[!0-9]*) ;;
                     *) set_timer_minutes "$menu_val" ;;
@@ -598,7 +602,7 @@ disarm() {
     stop_ticker
     restore_ra_lock
     ensure_fav_shortcut
-    rm -f "$sysdir/cmd_to_run.sh" "$uiout"
+    rm -f "$sysdir/cmd_to_run.sh" "$uiresult"
     sync
     log "Kid Mode disarmed."
     infoPanel -t "Kid Mode" -m "Unlocked!\nReturning to Onion." --auto
@@ -637,17 +641,17 @@ cmd_run() {
         rm -f "$sysdir/.runGameSwitcher" 2> /dev/null
         pgrep keymon > /dev/null 2>&1 || keymon &
 
-        rm -f "$uiout"
-        "$kidui_bin" > "$uiout"
+        rm -f "$uiresult"
+        "$kidui_bin" > "$uilog" 2>&1
         ui_rc=$?
 
         check_off_order "End"
 
         case "$ui_rc" in
             0) # game selected
-                [ "$(sed -n 1p "$uiout")" = "LAUNCH" ] || continue
-                sel_launch="$(sed -n 2p "$uiout")"
-                sel_rompath="$(sed -n 3p "$uiout")"
+                [ "$(sed -n 1p "$uiresult")" = "LAUNCH" ] || continue
+                sel_launch="$(sed -n 2p "$uiresult")"
+                sel_rompath="$(sed -n 3p "$uiresult")"
                 [ -f "$sel_rompath" ] || continue
 
                 sel_rem="$(timer_remaining)"
@@ -665,8 +669,8 @@ cmd_run() {
                 ui_fails=0
                 ;;
             3) # PIN entered
-                [ "$(sed -n 1p "$uiout")" = "PIN" ] || continue
-                if verify_pin "$(sed -n 2p "$uiout")"; then
+                [ "$(sed -n 1p "$uiresult")" = "PIN" ] || continue
+                if verify_pin "$(sed -n 2p "$uiresult")"; then
                     if parent_menu; then
                         disarm
                         return 0
