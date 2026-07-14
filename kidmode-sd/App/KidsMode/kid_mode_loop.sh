@@ -33,6 +33,11 @@ rabackup="$appdir/retroarch.cfg.kidmode-backup"
 uiout=/tmp/kidmode_ui_out
 logfile=/mnt/SDCARD/.tmp_update/logs/kidmode.log
 
+timer_state="$appdir/timer_state.txt" # 3 lines: day / used seconds / bonus seconds
+remaining_file=/tmp/kidmode_remaining
+ticker_pid_file=/tmp/kidmode_ticker.pid
+badge_dir="$appdir/res"
+
 export LD_LIBRARY_PATH="/lib:/config/lib:$miyoodir/lib:$sysdir/lib:$sysdir/lib/parasyte"
 export PATH="$sysdir/bin:$PATH"
 
@@ -63,7 +68,10 @@ make_salt() {
 
 config_get() {
     [ -f "$configfile" ] || return 1
-    jq -r --arg k "$1" '.[$k] // empty' "$configfile" 2> /dev/null
+    # NB: not `.[$k] // empty` — that would swallow boolean false
+    jq -r --arg k "$1" \
+        'if has($k) and .[$k] != null then (.[$k] | tostring) else empty end' \
+        "$configfile" 2> /dev/null
 }
 
 is_4_digits() {
@@ -73,21 +81,32 @@ is_4_digits() {
     esac
 }
 
+ensure_config() {
+    if [ ! -f "$configfile" ] || ! jq -e . "$configfile" > /dev/null 2>&1; then
+        printf '{\n    "pin_hash": "",\n    "pin_salt": "",\n    "pin_plain": ""\n}\n' > "$configfile"
+    fi
+}
+
+config_merge() {
+    # $1 = jq filter mutating the config; keeps all other keys intact
+    ensure_config
+    tmpcfg=/tmp/kidmode_config.$$
+    jq "$@" "$configfile" > "$tmpcfg" && mv -f "$tmpcfg" "$configfile"
+    sync
+}
+
 store_pin() {
     new_pin="$1"
     salt="$(make_salt)"
     hash="$(hash_string "${salt}${new_pin}" 2> /dev/null || true)"
-    tmpcfg=/tmp/kidmode_config.$$
     if [ -n "$hash" ]; then
-        jq -n --arg h "$hash" --arg s "$salt" \
-            '{pin_hash: $h, pin_salt: $s, pin_plain: ""}' > "$tmpcfg"
+        config_merge --arg h "$hash" --arg s "$salt" \
+            '.pin_hash = $h | .pin_salt = $s | .pin_plain = ""'
     else
         # No hashing tool available — plaintext fallback (threat model: child)
-        jq -n --arg p "$new_pin" \
-            '{pin_hash: "", pin_salt: "", pin_plain: $p}' > "$tmpcfg"
+        config_merge --arg p "$new_pin" \
+            '.pin_hash = "" | .pin_salt = "" | .pin_plain = $p'
     fi
-    mv -f "$tmpcfg" "$configfile"
-    sync
     log "PIN updated."
 }
 
@@ -191,6 +210,167 @@ restore_ra_lock() {
         sync
         log "RetroArch config restored."
     fi
+}
+
+# ------------------------------ play timer ---------------------------------
+# Daily play budget in 5-minute steps (timer_minutes in kidmode.json;
+# 0 = no timer). A background ticker counts *consumed* seconds — not wall
+# clock — so sleeping the device pauses the timer and rebooting doesn't
+# reset it (used/bonus persist in timer_state.txt, keyed to the day).
+# Warnings overlay the running game at 3/2/1 minutes left (imgpop);
+# at zero RetroArch gets a network QUIT, which triggers Onion's normal
+# auto-save — the game resumes exactly there next launch.
+
+get_timer_minutes() {
+    tm="$(config_get timer_minutes)"
+    case "$tm" in
+        '' | *[!0-9]*) echo 0 ;;
+        *) echo "$tm" ;;
+    esac
+}
+
+state_day() { sed -n 1p "$timer_state" 2> /dev/null; }
+state_used() {
+    v="$(sed -n 2p "$timer_state" 2> /dev/null)"
+    case "$v" in '' | *[!0-9]*) echo 0 ;; *) echo "$v" ;; esac
+}
+state_bonus() {
+    v="$(sed -n 3p "$timer_state" 2> /dev/null)"
+    case "$v" in '' | *[!0-9]*) echo 0 ;; *) echo "$v" ;; esac
+}
+
+state_write() { # $1 used, $2 bonus
+    printf '%s\n%s\n%s\n' "$(date +%Y-%m-%d)" "$1" "$2" > "$timer_state.tmp"
+    mv -f "$timer_state.tmp" "$timer_state"
+}
+
+state_day_check() {
+    if [ "$(state_day)" != "$(date +%Y-%m-%d)" ]; then
+        state_write 0 0
+    fi
+}
+
+# Recompute and publish remaining seconds right now (clamped to >= 0;
+# file absent = timer off). Called by the ticker and after menu changes.
+update_remaining_now() {
+    state_day_check
+    budget=$(($(get_timer_minutes) * 60 + $(state_bonus)))
+    if [ "$budget" -le 0 ]; then
+        rm -f "$remaining_file"
+        return 0
+    fi
+    rem=$((budget - $(state_used)))
+    [ "$rem" -lt 0 ] && rem=0
+    echo "$rem" > "$remaining_file"
+    return 0
+}
+
+timer_remaining() {
+    update_remaining_now
+    if [ -f "$remaining_file" ]; then
+        cat "$remaining_file"
+    else
+        echo -1 # timer off
+    fi
+}
+
+add_bonus() {
+    state_day_check
+    state_write "$(state_used)" "$(($(state_bonus) + $1))"
+    update_remaining_now
+    log "Bonus play time added: $1 s"
+}
+
+set_timer_minutes() {
+    config_merge --argjson m "$1" '.timer_minutes = $m'
+    update_remaining_now
+    log "Timer set to $1 min/day."
+}
+
+show_badge() { # $1 = 3|2|1|0 (minutes left)
+    badge="$badge_dir/warn_$1.png"
+    [ -f "$badge" ] || return 0
+    fbw="$(fbset 2> /dev/null | awk '/geometry/ {print $2}')"
+    case "$fbw" in '' | *[!0-9]*) fbw=640 ;; esac
+    imgpop 4 0 "$badge" $(((fbw - 276) / 2)) 12 > /dev/null 2>&1 &
+}
+
+game_is_running() {
+    pgrep -f "cmd_to_run.sh" > /dev/null 2>&1
+}
+
+# Ask the running game to stop gracefully. RetroArch first (network QUIT →
+# normal exit path → Onion auto-save state); escalate only if needed.
+# Non-RetroArch games (ports, standalone) get a plain TERM — best effort.
+save_quit_game() {
+    show_badge 0
+    sleep 2
+    if pgrep retroarch > /dev/null 2>&1; then
+        sendUDP QUIT
+        sleep 3
+        if pgrep retroarch > /dev/null 2>&1; then
+            sendUDP QUIT
+            sleep 3
+        fi
+        if pgrep retroarch > /dev/null 2>&1; then
+            killall -TERM retroarch 2> /dev/null
+            sleep 2
+        fi
+    elif game_is_running; then
+        pkill -TERM -f "cmd_to_run.sh" 2> /dev/null
+        sleep 2
+    fi
+    log "Play time over; game stopped."
+}
+
+ticker_loop() {
+    prev_rem=999999
+    while [ -f "$flagfile" ]; do
+        sleep 10
+        [ -f "$flagfile" ] || break
+        [ -f /tmp/shutting_down ] && break
+
+        state_day_check
+        budget=$(($(get_timer_minutes) * 60 + $(state_bonus)))
+        if [ "$budget" -le 0 ]; then
+            rm -f "$remaining_file"
+            prev_rem=999999
+            continue
+        fi
+
+        used=$(($(state_used) + 10))
+        state_write "$used" "$(state_bonus)"
+        rem=$((budget - used))
+        [ "$rem" -lt 0 ] && rem=0
+        echo "$rem" > "$remaining_file"
+
+        if game_is_running; then
+            for t in 180 120 60; do
+                if [ "$prev_rem" -gt "$t" ] && [ "$rem" -le "$t" ] && [ "$rem" -gt 0 ]; then
+                    show_badge $((t / 60))
+                fi
+            done
+            if [ "$rem" -le 0 ]; then
+                save_quit_game
+            fi
+        fi
+        prev_rem=$rem
+    done
+    rm -f "$remaining_file"
+}
+
+start_ticker() {
+    stop_ticker
+    ticker_loop &
+    echo $! > "$ticker_pid_file"
+}
+
+stop_ticker() {
+    if [ -f "$ticker_pid_file" ]; then
+        kill "$(cat "$ticker_pid_file")" 2> /dev/null
+        rm -f "$ticker_pid_file"
+    fi
+    rm -f "$remaining_file"
 }
 
 # --------------------------- shutdown handling -----------------------------
@@ -351,11 +531,73 @@ install_hook() {
     return 0
 }
 
+# ------------------------ MainUI favorites shortcut ------------------------
+# Adds a "Kid Mode" entry to Onion's Favorites tab (usually the boot tab),
+# so arming is one tap without visiting Apps. kidui filters this entry out
+# of the kid carousel. Disable with "fav_shortcut": false in kidmode.json.
+
+fav_entry='{"label":"Kid Mode","launch":"/mnt/SDCARD/App/KidsMode/launch.sh","type":5,"imgpath":"/mnt/SDCARD/Icons/Default/app/guest_on.png","rompath":"/mnt/SDCARD/App/KidsMode/launch.sh"}'
+
+ensure_fav_shortcut() {
+    if [ "$(config_get fav_shortcut)" = "false" ]; then
+        if grep -qF "/App/KidsMode/launch.sh" "$favfile" 2> /dev/null; then
+            grep -vF "/App/KidsMode/launch.sh" "$favfile" > "$favfile.tmp" &&
+                mv -f "$favfile.tmp" "$favfile"
+            sync
+        fi
+        return 0
+    fi
+
+    if ! grep -qF "/App/KidsMode/launch.sh" "$favfile" 2> /dev/null; then
+        printf '%s\n' "$fav_entry" >> "$favfile"
+        sync
+        log "Added Kid Mode shortcut to favorites."
+    fi
+}
+
+# ------------------------------ parent menu --------------------------------
+# Shown after a correct PIN: exit Kid Mode, +5 minutes, or set the daily
+# timer. Returns 0 = unlock requested, 1 = stay in Kid Mode.
+
+parent_menu() {
+    while :; do
+        rm -f "$uiout"
+        "$kidui_bin" --parent-menu --timer "$(get_timer_minutes)" \
+            --remaining "$(timer_remaining)" > "$uiout"
+        menu_rc=$?
+
+        if [ "$menu_rc" -ne 5 ] || [ "$(sed -n 1p "$uiout")" != "MENU" ]; then
+            rm -f "$uiout"
+            return 1
+        fi
+
+        menu_action="$(sed -n 2p "$uiout")"
+        case "$menu_action" in
+            UNLOCK)
+                rm -f "$uiout"
+                return 0
+                ;;
+            BONUS)
+                add_bonus 300
+                ;;
+            TIMER)
+                menu_val="$(sed -n 3p "$uiout")"
+                case "$menu_val" in
+                    '' | *[!0-9]*) ;;
+                    *) set_timer_minutes "$menu_val" ;;
+                esac
+                ;;
+        esac
+    done
+}
+
 # ------------------------------ unlock -------------------------------------
 
 disarm() {
     rm -f "$flagfile"
+    stop_ticker
     restore_ra_lock
+    ensure_fav_shortcut
     rm -f "$sysdir/cmd_to_run.sh" "$uiout"
     sync
     log "Kid Mode disarmed."
@@ -374,12 +616,18 @@ cmd_run() {
     chmod a+x "$kidui_bin" 2> /dev/null
 
     ui_fails=0
+    update_remaining_now
+    start_ticker
 
     # A game left in cmd_to_run.sh means the device powered off mid-game:
     # relaunch it first so RetroArch auto-resume works like stock Onion.
     if [ -f "$sysdir/cmd_to_run.sh" ] && is_game_cmd "$sysdir/cmd_to_run.sh"; then
-        log "resuming interrupted game"
-        run_game_cmd
+        if [ "$(timer_remaining)" = "0" ]; then
+            rm -f "$sysdir/cmd_to_run.sh"
+        else
+            log "resuming interrupted game"
+            run_game_cmd
+        fi
     fi
 
     while [ -f "$flagfile" ]; do
@@ -401,6 +649,17 @@ cmd_run() {
                 sel_launch="$(sed -n 2p "$uiout")"
                 sel_rompath="$(sed -n 3p "$uiout")"
                 [ -f "$sel_rompath" ] || continue
+
+                sel_rem="$(timer_remaining)"
+                [ "$sel_rem" = "0" ] && continue # out of time; kidui shows it
+                if [ "$sel_rem" -gt 0 ] && [ "$sel_rem" -le 180 ]; then
+                    # Starting with little time left: overlay a heads-up
+                    (
+                        sleep 6
+                        show_badge $(((sel_rem + 59) / 60))
+                    ) &
+                fi
+
                 build_game_cmd "$sel_launch" "$sel_rompath"
                 run_game_cmd
                 ui_fails=0
@@ -408,11 +667,14 @@ cmd_run() {
             3) # PIN entered
                 [ "$(sed -n 1p "$uiout")" = "PIN" ] || continue
                 if verify_pin "$(sed -n 2p "$uiout")"; then
-                    disarm
-                    return 0
+                    if parent_menu; then
+                        disarm
+                        return 0
+                    fi
+                else
+                    # Wrong PIN: silently return to the grid (rate-limited)
+                    sleep 1
                 fi
-                # Wrong PIN: silently return to the grid (rate-limited)
-                sleep 1
                 ;;
             *) # UI crashed or won't start
                 ui_fails=$((ui_fails + 1))
@@ -430,6 +692,7 @@ cmd_run() {
     done
 
     # Flag removed externally (e.g. deleted from a computer) — clean up
+    stop_ticker
     restore_ra_lock
     rm -f "$sysdir/cmd_to_run.sh"
     return 0
@@ -459,6 +722,7 @@ cmd_arm() {
     fi
 
     apply_ra_lock
+    ensure_fav_shortcut
     touch "$flagfile"
     sync
     log "Kid Mode armed."

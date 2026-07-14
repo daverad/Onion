@@ -15,6 +15,18 @@ young child can use it unsupervised. Requires **Onion OS 4.3 or newer**
 - Survives reboots: the mode flag lives on the SD card.
 - While armed, RetroArch's settings are hidden (kiosk mode) so the in-game
   menu can't be used to change cores/shaders/mappings. Restored on unlock.
+- **Daily play timer** (optional, 5-minute steps): warning badges overlay
+  the game at 3/2/1 minutes left; at zero the game is asked to quit
+  gracefully (Onion's auto-save snapshots the exact spot, so nothing is
+  lost) and a friendly "Time's up!" screen takes over. The timer counts
+  actual play time — sleeping pauses it, rebooting doesn't reset it, and it
+  refills each day.
+- **Parent menu** behind the PIN: Exit Kid Mode, +5 minutes today, or
+  change the daily timer.
+- A **"Kid Mode" entry in Onion's Favorites tab** (where the device usually
+  boots) arms it with one tap — no need to dig into Apps. It never shows up
+  inside the kid launcher. Disable with `"fav_shortcut": false` in
+  `kidmode.json`.
 
 ## How it works (design notes)
 
@@ -56,9 +68,15 @@ folder by the `Build Kid Mode UI` GitHub workflow; see "Rebuilding" below).
 2. Apps tab → **Kid Mode**. First time: set + confirm a 4-digit PIN with the
    d-pad. The device immediately switches to the kid launcher.
 3. Hand it over. Browsing: left/right. Play: A. Everything else does nothing.
-4. To get out: hold **SELECT+START ~3 s** until the PIN screen appears,
+4. Parent access: hold **SELECT+START ~3 s** until the PIN screen appears,
    dial the PIN (up/down changes a digit, left/right moves), press A.
-   A wrong PIN silently returns to the carousel.
+   A wrong PIN silently returns to the carousel. A correct PIN opens the
+   **parent menu**: *Exit Kid Mode*, *+5 minutes today*, *Timer per day*
+   (left/right in 5-minute steps, OFF–180), *Back*.
+5. The timer is off until you set it. With it on, the kid sees a small
+   "N min" chip on the carousel, gets 3/2/1-minute badges over the game,
+   and lands on "Time's up!" at zero — where the SELECT+START menu lets
+   you grant +5 minutes on the spot. Used minutes reset each day.
 
 ### Changing / resetting the PIN
 
@@ -79,11 +97,14 @@ modified on the card:
 
 - **Disarm:** delete `/mnt/SDCARD/.kidmode` → next boot is normal Onion.
 - **Remove entirely:** also delete
-  `/mnt/SDCARD/.tmp_update/startup/kidmode_boot.sh` and
-  `/mnt/SDCARD/App/KidsMode/`.
+  `/mnt/SDCARD/.tmp_update/startup/kidmode_boot.sh`,
+  `/mnt/SDCARD/App/KidsMode/`, and the "Kid Mode" favorite
+  (press X on it in Onion, or edit `Roms/favourite.json`).
 - **RetroArch settings stuck hidden:** copy
   `App/KidsMode/retroarch.cfg.kidmode-backup` over
   `RetroArch/.retroarch/retroarch.cfg` (only exists while armed).
+- **Reset today's play time:** delete `App/KidsMode/timer_state.txt`
+  (day / used seconds / bonus seconds).
 
 Fail-safes built in: if the kid UI binary is missing or crashes 3 times in a
 row, Kid Mode disarms itself and boots normal Onion rather than brick-loop.
@@ -107,6 +128,11 @@ A log is written to `.tmp_update/logs/kidmode.log`.
    works.
 8. **Recovery:** while armed, delete `.kidmode` from a computer → boots
    normal Onion.
+9. **Timer:** set *Timer per day: 5 min* in the parent menu, start a game →
+   badges at 3/2/1 minutes, game quits at zero into "Time's up!", and
+   relaunching the game after +5 minutes resumes exactly where it stopped.
+10. **Timer persistence:** reboot after time is up → still "Time's up!"
+    (no budget reset until the next day).
 
 ## Rebuilding the kid UI binary
 

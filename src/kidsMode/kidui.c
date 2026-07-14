@@ -7,11 +7,19 @@
 // Output protocol (stdout, consumed by kid_mode_loop.sh):
 //   exit 0:  "LAUNCH" \n <launch path> \n <rom path>
 //   exit 3:  "PIN" \n <4 digits>
+//   exit 5:  "MENU" \n <UNLOCK|BONUS|TIMER> [\n <minutes>]
 //   exit 1:  canceled / error / nothing selected
 //
 // Modes:
-//   kidui                      carousel (default)
-//   kidui --set-pin -t "..."   PIN entry only (for initial PIN setup)
+//   kidui                          carousel (default)
+//   kidui --set-pin -t "..."       PIN entry only (for initial PIN setup)
+//   kidui --parent-menu --timer N --remaining S
+//                                  post-PIN parent menu (N = configured
+//                                  minutes/day, S = seconds left, -1 = off)
+//
+// Play timer: kid_mode_loop.sh's ticker writes the remaining seconds to
+// /tmp/kidmode_remaining. The carousel shows it as a small chip and flips
+// to a friendly "Time's up!" screen at zero (SELECT+START still works).
 
 #include <SDL/SDL.h>
 #include <SDL/SDL_image.h>
@@ -37,12 +45,24 @@
 #define UNLOCK_HOLD_MS 3000
 #define UNLOCK_BAR_SHOW_MS 800
 #define PIN_IDLE_TIMEOUT_MS 30000
+#define REMAINING_POLL_MS 2000
+#define REMAINING_FILE "/tmp/kidmode_remaining"
 #define FONT_MAIN "/customer/app/Exo-2-Bold-Italic.ttf"
 #define FONT_FALLBACK "/mnt/SDCARD/miyoo/app/Exo-2-Bold-Italic.ttf"
 
 typedef enum { SCREEN_CAROUSEL,
                SCREEN_PIN,
-               SCREEN_EMPTY } Screen;
+               SCREEN_EMPTY,
+               SCREEN_TIMESUP,
+               SCREEN_MENU } Screen;
+
+#define MENU_UNLOCK 0
+#define MENU_BONUS 1
+#define MENU_TIMER 2
+#define MENU_BACK 3
+#define MENU_COUNT 4
+#define TIMER_STEP 5
+#define TIMER_MAX 180
 
 static bool quit = false;
 
@@ -89,6 +109,10 @@ static void loadFavorites(void)
         JsonGameEntry entry = JsonGameEntry_fromJson(line);
 
         if (strlen(entry.launch) == 0 || strlen(entry.rompath) == 0)
+            continue;
+        // Skip the "Kid Mode" shortcut favorite (arms Kid Mode from MainUI)
+        if (strstr(entry.launch, "/App/KidsMode/") != NULL ||
+            strstr(entry.rompath, "/App/KidsMode/") != NULL)
             continue;
         // Skip favorites whose rom no longer exists (no dead-ends for the kid)
         if (access(entry.rompath, F_OK) != 0)
@@ -244,6 +268,88 @@ static void renderEmpty(TTF_Font *font_title, TTF_Font *font_small)
              g_display.width - 40);
 }
 
+// Remaining play time in seconds; -1 = timer off (file absent/invalid)
+static int readRemaining(void)
+{
+    FILE *fp = fopen(REMAINING_FILE, "r");
+    if (fp == NULL)
+        return -1;
+    char buf[32] = "";
+    int result = -1;
+    if (fgets(buf, sizeof(buf), fp) != NULL && strlen(buf) > 0 &&
+        (buf[0] == '-' || (buf[0] >= '0' && buf[0] <= '9')))
+        result = atoi(buf);
+    fclose(fp);
+    return result;
+}
+
+static void renderTimeChip(int remaining, TTF_Font *font_small)
+{
+    if (remaining < 0)
+        return;
+    int mins = (remaining + 59) / 60;
+    char chip[32];
+    snprintf(chip, sizeof(chip), "%d min", mins);
+    SDL_Color color = mins <= 5 ? COLOR_ACCENT : COLOR_DIM;
+    drawText(chip, (int)(g_display.width * 0.085),
+             (int)(g_display.height * 0.045), font_small, color, 0);
+}
+
+static void renderTimesUp(TTF_Font *font_title, TTF_Font *font_small)
+{
+    fillRect(0, 0, g_display.width, g_display.height, BG_COLOR);
+    int cx = g_display.width / 2;
+    drawText("Time's up!", cx, (int)(g_display.height * 0.38), font_title,
+             COLOR_ACCENT, g_display.width - 40);
+    drawText("Great playing! See you next time.", cx,
+             (int)(g_display.height * 0.54), font_small, COLOR_WHITE,
+             g_display.width - 40);
+}
+
+static void renderMenu(int selected, int timer_minutes, int remaining,
+                       TTF_Font *font_title, TTF_Font *font_menu,
+                       TTF_Font *font_small)
+{
+    fillRect(0, 0, g_display.width, g_display.height, BG_COLOR);
+    int cx = g_display.width / 2;
+
+    drawText("Parent Menu", cx, (int)(g_display.height * 0.14), font_title,
+             COLOR_WHITE, g_display.width - 40);
+
+    if (remaining >= 0) {
+        char info[64];
+        snprintf(info, sizeof(info), "Time left today: %d min",
+                 (remaining + 59) / 60);
+        drawText(info, cx, (int)(g_display.height * 0.24), font_small,
+                 COLOR_DIM, g_display.width - 40);
+    }
+
+    char timer_label[64];
+    if (timer_minutes > 0)
+        snprintf(timer_label, sizeof(timer_label), "< Timer per day: %d min >",
+                 timer_minutes);
+    else
+        snprintf(timer_label, sizeof(timer_label), "< Timer per day: OFF >");
+
+    const char *items[MENU_COUNT];
+    items[MENU_UNLOCK] = "Exit Kid Mode";
+    items[MENU_BONUS] = "+5 minutes today";
+    items[MENU_TIMER] = timer_label;
+    items[MENU_BACK] = "Back";
+
+    for (int i = 0; i < MENU_COUNT; i++) {
+        int y = (int)(g_display.height * (0.38 + 0.12 * i));
+        if (i == selected) {
+            int row_h = (int)(g_display.height * 0.1);
+            fillRect((int)(g_display.width * 0.14), y - row_h / 2,
+                     (int)(g_display.width * 0.72), row_h, PIN_BOX_ACTIVE);
+        }
+        drawText(items[i], cx, y, font_menu,
+                 i == selected ? COLOR_WHITE : COLOR_DIM,
+                 (int)(g_display.width * 0.7));
+    }
+}
+
 static void renderPin(const char *title, TTF_Font *font_title,
                       TTF_Font *font_digit, TTF_Font *font_small)
 {
@@ -301,16 +407,30 @@ static void flip(void)
 int main(int argc, char *argv[])
 {
     bool set_pin_mode = false;
+    bool menu_mode = false;
+    int menu_timer_minutes = 0;
+    int menu_remaining = -1;
     char pin_title[STR_MAX] = "Enter PIN";
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--set-pin") == 0)
             set_pin_mode = true;
+        else if (strcmp(argv[i], "--parent-menu") == 0)
+            menu_mode = true;
+        else if (strcmp(argv[i], "--timer") == 0 && i + 1 < argc)
+            menu_timer_minutes = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--remaining") == 0 && i + 1 < argc)
+            menu_remaining = atoi(argv[++i]);
         else if ((strcmp(argv[i], "-t") == 0 ||
                   strcmp(argv[i], "--title") == 0) &&
                  i + 1 < argc)
             strncpy(pin_title, argv[++i], STR_MAX - 1);
     }
+
+    if (menu_timer_minutes < 0)
+        menu_timer_minutes = 0;
+    if (menu_timer_minutes > TIMER_MAX)
+        menu_timer_minutes = TIMER_MAX;
 
     signal(SIGINT, sigHandler);
     signal(SIGTERM, sigHandler);
@@ -323,16 +443,25 @@ int main(int argc, char *argv[])
     TTF_Font *font_title = openFont(g_display.height / 13); // ~36px @480
     TTF_Font *font_arrow = openFont(g_display.height / 8);  // ~60px @480
     TTF_Font *font_digit = openFont(g_display.height / 9);  // ~53px @480
+    TTF_Font *font_menu = openFont(g_display.height / 17);  // ~28px @480
     TTF_Font *font_small = openFont(g_display.height / 24); // ~20px @480
 
     Screen active_screen = SCREEN_CAROUSEL;
+    int menu_selected = 0;
+    int remaining = -1;
 
     if (set_pin_mode) {
         active_screen = SCREEN_PIN;
     }
+    else if (menu_mode) {
+        active_screen = SCREEN_MENU;
+    }
     else {
         loadFavorites();
-        if (games_count == 0)
+        remaining = readRemaining();
+        if (remaining == 0)
+            active_screen = SCREEN_TIMESUP;
+        else if (games_count == 0)
             active_screen = SCREEN_EMPTY;
     }
 
@@ -342,6 +471,7 @@ int main(int argc, char *argv[])
     uint32_t hold_started = 0;
     uint32_t last_hold_ms = 0;
     uint32_t pin_last_input = SDL_GetTicks();
+    uint32_t last_remaining_poll = SDL_GetTicks();
 
     while (!quit) {
         SDLKey changed_key = SDLK_UNKNOWN;
@@ -371,6 +501,62 @@ int main(int argc, char *argv[])
                     break;
                 default:
                     // Everything else is a no-op: no dead-ends for the kid
+                    break;
+                }
+            }
+            else if (active_screen == SCREEN_MENU) {
+                switch (changed_key) {
+                case SW_BTN_UP:
+                    menu_selected =
+                        (menu_selected + MENU_COUNT - 1) % MENU_COUNT;
+                    dirty = true;
+                    break;
+                case SW_BTN_DOWN:
+                    menu_selected = (menu_selected + 1) % MENU_COUNT;
+                    dirty = true;
+                    break;
+                case SW_BTN_LEFT:
+                    if (menu_selected == MENU_TIMER) {
+                        menu_timer_minutes -= TIMER_STEP;
+                        if (menu_timer_minutes < 0)
+                            menu_timer_minutes = 0;
+                        dirty = true;
+                    }
+                    break;
+                case SW_BTN_RIGHT:
+                    if (menu_selected == MENU_TIMER) {
+                        menu_timer_minutes += TIMER_STEP;
+                        if (menu_timer_minutes > TIMER_MAX)
+                            menu_timer_minutes = TIMER_MAX;
+                        dirty = true;
+                    }
+                    break;
+                case SW_BTN_A:
+                    if (menu_selected == MENU_UNLOCK) {
+                        printf("MENU\nUNLOCK\n");
+                        exit_code = 5;
+                        quit = true;
+                    }
+                    else if (menu_selected == MENU_BONUS) {
+                        printf("MENU\nBONUS\n");
+                        exit_code = 5;
+                        quit = true;
+                    }
+                    else if (menu_selected == MENU_TIMER) {
+                        printf("MENU\nTIMER\n%d\n", menu_timer_minutes);
+                        exit_code = 5;
+                        quit = true;
+                    }
+                    else {
+                        exit_code = 1;
+                        quit = true;
+                    }
+                    break;
+                case SW_BTN_B:
+                    exit_code = 1;
+                    quit = true;
+                    break;
+                default:
                     break;
                 }
             }
@@ -405,8 +591,9 @@ int main(int argc, char *argv[])
                         quit = true;
                     }
                     else {
-                        active_screen =
-                            games_count > 0 ? SCREEN_CAROUSEL : SCREEN_EMPTY;
+                        active_screen = remaining == 0 ? SCREEN_TIMESUP
+                                        : games_count > 0 ? SCREEN_CAROUSEL
+                                                          : SCREEN_EMPTY;
                         pin_digits[0] = pin_digits[1] = pin_digits[2] =
                             pin_digits[3] = 0;
                         pin_cursor = 0;
@@ -419,8 +606,8 @@ int main(int argc, char *argv[])
             }
         }
 
-        // SELECT+START held: parent unlock gesture (carousel + empty screen)
-        if (!set_pin_mode && active_screen != SCREEN_PIN) {
+        // SELECT+START held: parent unlock gesture (any kid-facing screen)
+        if (!set_pin_mode && !menu_mode && active_screen != SCREEN_PIN) {
             bool combo_held = keystate[SW_BTN_SELECT] != RELEASED &&
                               keystate[SW_BTN_START] != RELEASED;
             if (combo_held) {
@@ -451,10 +638,37 @@ int main(int argc, char *argv[])
         // PIN screen idle timeout back to the kid screen (not in set-pin mode)
         if (!set_pin_mode && active_screen == SCREEN_PIN &&
             ticks - pin_last_input > PIN_IDLE_TIMEOUT_MS) {
-            active_screen = games_count > 0 ? SCREEN_CAROUSEL : SCREEN_EMPTY;
+            active_screen = remaining == 0        ? SCREEN_TIMESUP
+                            : games_count > 0     ? SCREEN_CAROUSEL
+                                                  : SCREEN_EMPTY;
             pin_digits[0] = pin_digits[1] = pin_digits[2] = pin_digits[3] = 0;
             pin_cursor = 0;
             dirty = true;
+        }
+
+        // Poll the play-timer file and switch screens on expiry/refill
+        if (!set_pin_mode && !menu_mode &&
+            ticks - last_remaining_poll > REMAINING_POLL_MS) {
+            last_remaining_poll = ticks;
+            int prev_remaining = remaining;
+            remaining = readRemaining();
+
+            if (active_screen != SCREEN_PIN) {
+                if (remaining == 0 && active_screen != SCREEN_TIMESUP) {
+                    active_screen = SCREEN_TIMESUP;
+                    dirty = true;
+                }
+                else if (remaining != 0 && active_screen == SCREEN_TIMESUP) {
+                    active_screen =
+                        games_count > 0 ? SCREEN_CAROUSEL : SCREEN_EMPTY;
+                    dirty = true;
+                }
+            }
+
+            // Redraw the chip when the displayed minute count changes
+            if (active_screen == SCREEN_CAROUSEL &&
+                (prev_remaining + 59) / 60 != (remaining + 59) / 60)
+                dirty = true;
         }
 
         if (quit)
@@ -464,12 +678,20 @@ int main(int argc, char *argv[])
             switch (active_screen) {
             case SCREEN_CAROUSEL:
                 renderCarousel(font_title, font_arrow, font_small);
+                renderTimeChip(remaining, font_small);
                 break;
             case SCREEN_EMPTY:
                 renderEmpty(font_title, font_small);
                 break;
             case SCREEN_PIN:
                 renderPin(pin_title, font_title, font_digit, font_small);
+                break;
+            case SCREEN_TIMESUP:
+                renderTimesUp(font_title, font_menu);
+                break;
+            case SCREEN_MENU:
+                renderMenu(menu_selected, menu_timer_minutes, menu_remaining,
+                           font_title, font_menu, font_small);
                 break;
             }
             if (hold_started != 0)
@@ -489,6 +711,8 @@ int main(int argc, char *argv[])
         TTF_CloseFont(font_arrow);
     if (font_digit != NULL)
         TTF_CloseFont(font_digit);
+    if (font_menu != NULL)
+        TTF_CloseFont(font_menu);
     if (font_small != NULL)
         TTF_CloseFont(font_small);
 
