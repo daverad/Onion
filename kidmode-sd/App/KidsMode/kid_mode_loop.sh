@@ -320,6 +320,14 @@ hide_chip() {
     fi
 }
 
+# RetroArch redraws the framebuffer every frame, so imgpop overlays are not
+# reliably visible inside games. Use RetroArch's own OSD instead (SHOW_MSG
+# network command — same socket used for the graceful QUIT). Silently
+# ignored by anything that isn't RetroArch.
+notify_game() {
+    sendUDP "SHOW_MSG $1" > /dev/null 2>&1 &
+}
+
 game_is_running() {
     pgrep -f "cmd_to_run.sh" > /dev/null 2>&1
 }
@@ -329,6 +337,7 @@ game_is_running() {
 # Non-RetroArch games (ports, standalone) get a plain TERM — best effort.
 save_quit_game() {
     show_badge 0
+    notify_game "Time's up! Saving your game..."
     sleep 2
     if pgrep retroarch > /dev/null 2>&1; then
         sendUDP QUIT
@@ -370,10 +379,28 @@ ticker_loop() {
         echo "$rem" > "$remaining_file"
 
         if game_is_running; then
-            # Keep the corner chip in sync with the displayed minute
             rem_min=$(((rem + 59) / 60))
+
+            # Fresh game session: announce the budget once via RA's OSD
+            if [ "$game_seen" != "1" ]; then
+                game_seen=1
+                [ "$rem" -gt 0 ] && notify_game "Play time: $rem_min minutes"
+            fi
+
+            # Keep the corner chip in sync with the displayed minute
+            # (visible over non-RetroArch content; RA games use the OSD)
             if [ "$rem" -gt 0 ] && [ "$rem_min" != "$chip_shown" ]; then
                 show_chip "$rem_min"
+                # OSD countdown: every 10 min, then every minute from 5 down
+                if [ "$rem_min" -le 5 ]; then
+                    if [ "$rem_min" -eq 1 ]; then
+                        notify_game "1 minute left!"
+                    else
+                        notify_game "$rem_min minutes left"
+                    fi
+                elif [ $((rem_min % 10)) -eq 0 ]; then
+                    notify_game "$rem_min minutes left"
+                fi
             fi
 
             for t in 180 120 60; do
@@ -386,6 +413,7 @@ ticker_loop() {
                 save_quit_game
             fi
         else
+            game_seen=0
             hide_chip
         fi
         prev_rem=$rem
