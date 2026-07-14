@@ -25,7 +25,6 @@
 
 #include <SDL/SDL.h>
 #include <SDL/SDL_image.h>
-#include <SDL/SDL_rotozoom.h>
 #include <SDL/SDL_ttf.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -57,7 +56,8 @@ typedef enum { SCREEN_CAROUSEL,
                SCREEN_PIN,
                SCREEN_EMPTY,
                SCREEN_TIMESUP,
-               SCREEN_MENU } Screen;
+               SCREEN_MENU,
+               SCREEN_PICKTIMER } Screen;
 
 #define MENU_UNLOCK 0
 #define MENU_BONUS 1
@@ -65,7 +65,8 @@ typedef enum { SCREEN_CAROUSEL,
 #define MENU_BACK 3
 #define MENU_COUNT 4
 #define TIMER_STEP 5
-#define TIMER_MAX 180
+#define TIMER_MAX 50
+#define SYSTEM_JSON "/mnt/SDCARD/system.json"
 
 static bool quit = false;
 
@@ -81,10 +82,150 @@ static int pin_cursor = 0;
 
 static const SDL_Color COLOR_WHITE = {255, 255, 255};
 static const SDL_Color COLOR_DIM = {130, 140, 160};
-static const SDL_Color COLOR_ACCENT = {255, 200, 60};
+static SDL_Color COLOR_ACCENT = {255, 200, 60}; // replaced by theme color
+static uint32_t ACCENT_HEX = 0xFFC83C;
 static const uint32_t BG_COLOR = 0x1A1B26;      // dark navy
 static const uint32_t PIN_BOX_COLOR = 0x2E3350; // slate
 static const uint32_t PIN_BOX_ACTIVE = 0x4A5480;
+
+// Pick up the accent color of the active Onion theme so the PIN pad and
+// highlights match the rest of the system (falls back to amber).
+static bool parseHexColor(const char *hex, SDL_Color *out)
+{
+    if (hex == NULL)
+        return false;
+    if (hex[0] == '#')
+        hex++;
+    if (strlen(hex) < 6)
+        return false;
+    unsigned int r, g, b;
+    if (sscanf(hex, "%02x%02x%02x", &r, &g, &b) != 3)
+        return false;
+    out->r = (Uint8)r;
+    out->g = (Uint8)g;
+    out->b = (Uint8)b;
+    return true;
+}
+
+static bool themeColorFromKey(cJSON *root, const char *section, SDL_Color *out)
+{
+    cJSON *json_section = cJSON_GetObjectItem(root, section);
+    if (json_section == NULL)
+        return false;
+    cJSON *json_color = cJSON_GetObjectItem(json_section, "color");
+    if (json_color == NULL)
+        json_color = cJSON_GetObjectItem(json_section, "selectedcolor");
+    if (json_color == NULL)
+        return false;
+    return parseHexColor(cJSON_GetStringValue(json_color), out);
+}
+
+static void loadThemeAccent(void)
+{
+    char *system_json = file_read(SYSTEM_JSON);
+    if (system_json == NULL)
+        return;
+
+    char theme_path[STR_MAX] = "";
+    cJSON *system_root = cJSON_Parse(system_json);
+    free(system_json);
+    if (system_root == NULL)
+        return;
+    json_getString(system_root, "theme", theme_path);
+    cJSON_Delete(system_root);
+
+    if (strlen(theme_path) == 0)
+        return;
+
+    char config_path[STR_MAX * 2];
+    snprintf(config_path, sizeof(config_path), "%s%sconfig.json", theme_path,
+             theme_path[strlen(theme_path) - 1] == '/' ? "" : "/");
+
+    char *theme_json = file_read(config_path);
+    if (theme_json == NULL)
+        return;
+    cJSON *theme_root = cJSON_Parse(theme_json);
+    free(theme_json);
+    if (theme_root == NULL)
+        return;
+
+    SDL_Color accent;
+    if (themeColorFromKey(theme_root, "currentpage", &accent) ||
+        themeColorFromKey(theme_root, "grid", &accent) ||
+        themeColorFromKey(theme_root, "title", &accent)) {
+        COLOR_ACCENT = accent;
+        ACCENT_HEX = ((uint32_t)accent.r << 16) | ((uint32_t)accent.g << 8) |
+                     accent.b;
+    }
+    cJSON_Delete(theme_root);
+}
+
+// The device's libSDL_rotozoom flips zoomed surfaces vertically, so scale
+// box art ourselves (simple bilinear, ARGB8888 in and out).
+static SDL_Surface *scaleSurface(SDL_Surface *src, int dst_w, int dst_h)
+{
+    if (src == NULL || dst_w < 1 || dst_h < 1)
+        return NULL;
+
+    SDL_Surface *src32 = SDL_CreateRGBSurface(
+        SDL_SWSURFACE, src->w, src->h, 32, 0x00FF0000, 0x0000FF00, 0x000000FF,
+        0xFF000000);
+    if (src32 == NULL)
+        return NULL;
+    SDL_SetAlpha(src, 0, 255); // copy alpha channel as-is
+    SDL_BlitSurface(src, NULL, src32, NULL);
+
+    SDL_Surface *dst = SDL_CreateRGBSurface(
+        SDL_SWSURFACE, dst_w, dst_h, 32, 0x00FF0000, 0x0000FF00, 0x000000FF,
+        0xFF000000);
+    if (dst == NULL) {
+        SDL_FreeSurface(src32);
+        return NULL;
+    }
+
+    uint32_t *sp = (uint32_t *)src32->pixels;
+    uint32_t *dp = (uint32_t *)dst->pixels;
+    int sw = src32->w, sh = src32->h;
+    int spitch = src32->pitch / 4, dpitch = dst->pitch / 4;
+
+    for (int y = 0; y < dst_h; y++) {
+        double fy = ((double)y + 0.5) * sh / dst_h - 0.5;
+        int y0 = (int)fy;
+        if (y0 < 0)
+            y0 = 0;
+        int y1 = y0 + 1 < sh ? y0 + 1 : sh - 1;
+        double wy = fy - y0;
+        if (wy < 0)
+            wy = 0;
+
+        for (int x = 0; x < dst_w; x++) {
+            double fx = ((double)x + 0.5) * sw / dst_w - 0.5;
+            int x0 = (int)fx;
+            if (x0 < 0)
+                x0 = 0;
+            int x1 = x0 + 1 < sw ? x0 + 1 : sw - 1;
+            double wx = fx - x0;
+            if (wx < 0)
+                wx = 0;
+
+            uint32_t p00 = sp[y0 * spitch + x0], p01 = sp[y0 * spitch + x1];
+            uint32_t p10 = sp[y1 * spitch + x0], p11 = sp[y1 * spitch + x1];
+
+            uint32_t result = 0;
+            for (int shift = 0; shift <= 24; shift += 8) {
+                double c = ((p00 >> shift) & 0xFF) * (1 - wx) * (1 - wy) +
+                           ((p01 >> shift) & 0xFF) * wx * (1 - wy) +
+                           ((p10 >> shift) & 0xFF) * (1 - wx) * wy +
+                           ((p11 >> shift) & 0xFF) * wx * wy;
+                result |= ((uint32_t)(c + 0.5) & 0xFF) << shift;
+            }
+            dp[y * dpitch + x] = result;
+        }
+    }
+
+    SDL_FreeSurface(src32);
+    return dst;
+}
 
 // Results go through a file: stdout is unreliable on-device (SDL/driver
 // messages land there ahead of anything we print).
@@ -212,14 +353,15 @@ static void loadArtwork(void)
     double scale = scale_w < scale_h ? scale_w : scale_h;
 
     if (scale > 0.0 && (scale < 0.999 || scale > 1.001)) {
-        SDL_Surface *scaled = zoomSurface(raw, scale, scale, SMOOTHING_ON);
+        SDL_Surface *scaled = scaleSurface(raw, (int)(raw->w * scale + 0.5),
+                                           (int)(raw->h * scale + 0.5));
         if (scaled != NULL) {
             SDL_FreeSurface(raw);
             raw = scaled;
         }
     }
 
-    artwork = SDL_DisplayFormat(raw);
+    artwork = SDL_DisplayFormatAlpha(raw);
     if (artwork == NULL)
         artwork = raw;
     else
@@ -344,10 +486,10 @@ static void renderMenu(int selected, int timer_minutes, int remaining,
 
     char timer_label[64];
     if (timer_minutes > 0)
-        snprintf(timer_label, sizeof(timer_label), "< Timer per day: %d min >",
+        snprintf(timer_label, sizeof(timer_label), "< Timer: %d min >",
                  timer_minutes);
     else
-        snprintf(timer_label, sizeof(timer_label), "< Timer per day: OFF >");
+        snprintf(timer_label, sizeof(timer_label), "< Timer: OFF >");
 
     const char *items[MENU_COUNT];
     items[MENU_UNLOCK] = "Exit Kid Mode";
@@ -413,7 +555,36 @@ static void renderHoldBar(uint32_t held_ms)
     int w = (int)((double)full_w * ((double)held_ms / UNLOCK_HOLD_MS));
     if (w > full_w)
         w = full_w;
-    fillRect(0, 0, w, 6, 0xFFC83C);
+    fillRect(0, 0, w, 6, ACCENT_HEX);
+}
+
+static void renderPickTimer(int minutes, TTF_Font *font_title,
+                            TTF_Font *font_big, TTF_Font *font_small)
+{
+    fillRect(0, 0, g_display.width, g_display.height, BG_COLOR);
+    int cx = g_display.width / 2;
+
+    drawText("Play timer", cx, (int)(g_display.height * 0.2), font_title,
+             COLOR_WHITE, g_display.width - 40);
+
+    char value[32];
+    if (minutes > 0)
+        snprintf(value, sizeof(value), "%d min", minutes);
+    else
+        snprintf(value, sizeof(value), "OFF");
+    drawText(value, cx, (int)(g_display.height * 0.45), font_big,
+             COLOR_ACCENT, 0);
+
+    drawText("<", (int)(g_display.width * 0.18), (int)(g_display.height * 0.45),
+             font_title, COLOR_DIM, 0);
+    drawText(">", (int)(g_display.width * 0.82), (int)(g_display.height * 0.45),
+             font_title, COLOR_DIM, 0);
+
+    drawText("LEFT/RIGHT: change    A: start", cx,
+             (int)(g_display.height * 0.72), font_small, COLOR_DIM,
+             g_display.width - 40);
+    drawText("B: no timer", cx, (int)(g_display.height * 0.79), font_small,
+             COLOR_DIM, g_display.width - 40);
 }
 
 static void flip(void)
@@ -426,6 +597,7 @@ int main(int argc, char *argv[])
 {
     bool set_pin_mode = false;
     bool menu_mode = false;
+    bool pick_timer_mode = false;
     int menu_timer_minutes = 0;
     int menu_remaining = -1;
     char pin_title[STR_MAX] = "Enter PIN";
@@ -435,6 +607,8 @@ int main(int argc, char *argv[])
             set_pin_mode = true;
         else if (strcmp(argv[i], "--parent-menu") == 0)
             menu_mode = true;
+        else if (strcmp(argv[i], "--pick-timer") == 0)
+            pick_timer_mode = true;
         else if (strcmp(argv[i], "--timer") == 0 && i + 1 < argc)
             menu_timer_minutes = atoi(argv[++i]);
         else if (strcmp(argv[i], "--remaining") == 0 && i + 1 < argc)
@@ -469,11 +643,17 @@ int main(int argc, char *argv[])
     int menu_selected = 0;
     int remaining = -1;
 
+    loadThemeAccent();
+
     if (set_pin_mode) {
         active_screen = SCREEN_PIN;
     }
     else if (menu_mode) {
         active_screen = SCREEN_MENU;
+    }
+    else if (pick_timer_mode) {
+        active_screen = SCREEN_PICKTIMER;
+        menu_timer_minutes = 0; // default: no timer
     }
     else {
         loadFavorites();
@@ -520,6 +700,42 @@ int main(int argc, char *argv[])
                     break;
                 default:
                     // Everything else is a no-op: no dead-ends for the kid
+                    break;
+                }
+            }
+            else if (active_screen == SCREEN_PICKTIMER) {
+                switch (changed_key) {
+                case SW_BTN_RIGHT:
+                case SW_BTN_UP:
+                    menu_timer_minutes += TIMER_STEP;
+                    if (menu_timer_minutes > TIMER_MAX)
+                        menu_timer_minutes = TIMER_MAX;
+                    dirty = true;
+                    break;
+                case SW_BTN_LEFT:
+                case SW_BTN_DOWN:
+                    menu_timer_minutes -= TIMER_STEP;
+                    if (menu_timer_minutes < 0)
+                        menu_timer_minutes = 0;
+                    dirty = true;
+                    break;
+                case SW_BTN_A:
+                case SW_BTN_START: {
+                    char minutes_str[16];
+                    snprintf(minutes_str, sizeof(minutes_str), "%d",
+                             menu_timer_minutes);
+                    writeResult("TIMER", minutes_str, NULL);
+                    exit_code = 5;
+                    quit = true;
+                    break;
+                }
+                case SW_BTN_B:
+                    // B = the default: no timer
+                    writeResult("TIMER", "0", NULL);
+                    exit_code = 5;
+                    quit = true;
+                    break;
+                default:
                     break;
                 }
             }
@@ -633,7 +849,8 @@ int main(int argc, char *argv[])
         }
 
         // SELECT+START held: parent unlock gesture (any kid-facing screen)
-        if (!set_pin_mode && !menu_mode && active_screen != SCREEN_PIN) {
+        if (!set_pin_mode && !menu_mode && !pick_timer_mode &&
+            active_screen != SCREEN_PIN) {
             bool combo_held = keystate[SW_BTN_SELECT] != RELEASED &&
                               keystate[SW_BTN_START] != RELEASED;
             if (combo_held) {
@@ -673,7 +890,7 @@ int main(int argc, char *argv[])
         }
 
         // Poll the play-timer file and switch screens on expiry/refill
-        if (!set_pin_mode && !menu_mode &&
+        if (!set_pin_mode && !menu_mode && !pick_timer_mode &&
             ticks - last_remaining_poll > REMAINING_POLL_MS) {
             last_remaining_poll = ticks;
             int prev_remaining = remaining;
@@ -719,6 +936,10 @@ int main(int argc, char *argv[])
                 renderMenu(menu_selected, menu_timer_minutes, menu_remaining,
                            font_title, font_menu, font_small);
                 break;
+            case SCREEN_PICKTIMER:
+                renderPickTimer(menu_timer_minutes, font_title, font_digit,
+                                font_small);
+                break;
             }
             if (hold_started != 0)
                 renderHoldBar(ticks - hold_started);
@@ -742,10 +963,9 @@ int main(int argc, char *argv[])
     if (font_small != NULL)
         TTF_CloseFont(font_small);
 
-    // Clear the screen so the next process starts from black
-    SDL_FillRect(video, NULL, 0);
-    SDL_Flip(video);
-
+    // NB: deliberately no final clear+flip here — an extra page flip on the
+    // device can leave the visible framebuffer page out of sync with the
+    // next process (MainUI painting an invisible page after unlock).
     TTF_Quit();
     SDL_Quit();
 

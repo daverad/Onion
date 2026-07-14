@@ -299,6 +299,27 @@ show_badge() { # $1 = 3|2|1|0 (minutes left)
     imgpop 4 0 "$badge" $(((fbw - 276) / 2)) 12 > /dev/null 2>&1 &
 }
 
+# Persistent remaining-time chip in the top-left corner while a game runs.
+# Updated by the ticker whenever the displayed minute changes.
+chip_shown=""
+
+show_chip() { # $1 = minutes remaining (1..50)
+    chip_min="$1"
+    [ "$chip_min" -gt 50 ] && chip_min=50
+    chip_png="$badge_dir/chips/chip_${chip_min}.png"
+    [ -f "$chip_png" ] || return 0
+    killall imgpop 2> /dev/null
+    imgpop 86400 0 "$chip_png" 8 8 > /dev/null 2>&1 &
+    chip_shown="$chip_min"
+}
+
+hide_chip() {
+    if [ -n "$chip_shown" ]; then
+        killall imgpop 2> /dev/null
+        chip_shown=""
+    fi
+}
+
 game_is_running() {
     pgrep -f "cmd_to_run.sh" > /dev/null 2>&1
 }
@@ -349,17 +370,27 @@ ticker_loop() {
         echo "$rem" > "$remaining_file"
 
         if game_is_running; then
+            # Keep the corner chip in sync with the displayed minute
+            rem_min=$(((rem + 59) / 60))
+            if [ "$rem" -gt 0 ] && [ "$rem_min" != "$chip_shown" ]; then
+                show_chip "$rem_min"
+            fi
+
             for t in 180 120 60; do
                 if [ "$prev_rem" -gt "$t" ] && [ "$rem" -le "$t" ] && [ "$rem" -gt 0 ]; then
                     show_badge $((t / 60))
                 fi
             done
             if [ "$rem" -le 0 ]; then
+                hide_chip
                 save_quit_game
             fi
+        else
+            hide_chip
         fi
         prev_rem=$rem
     done
+    hide_chip
     rm -f "$remaining_file"
 }
 
@@ -374,6 +405,7 @@ stop_ticker() {
         kill "$(cat "$ticker_pid_file")" 2> /dev/null
         rm -f "$ticker_pid_file"
     fi
+    killall imgpop 2> /dev/null # remove any lingering chip overlay
     rm -f "$remaining_file"
 }
 
@@ -542,21 +574,68 @@ install_hook() {
 
 fav_entry='{"label":"Kid Mode","launch":"/mnt/SDCARD/App/KidsMode/launch.sh","type":5,"imgpath":"/mnt/SDCARD/Icons/Default/app/guest_on.png","rompath":"/mnt/SDCARD/App/KidsMode/launch.sh"}'
 
+# An earlier version appended the shortcut without checking that the file
+# ended in a newline, which could glue two JSON entries onto one line and
+# corrupt the favorites list (breaking MainUI search results too). Split
+# any glued lines back apart.
+repair_favourites() {
+    [ -f "$favfile" ] || return 0
+    if grep -q '}{' "$favfile"; then
+        awk '{gsub(/\}\{/, "}\n{"); print}' "$favfile" > "$favfile.tmp" &&
+            mv -f "$favfile.tmp" "$favfile"
+        sync
+        log "Repaired glued lines in favourite.json."
+    fi
+}
+
 ensure_fav_shortcut() {
-    if [ "$(config_get fav_shortcut)" = "false" ]; then
+    repair_favourites
+
+    # Default OFF: the entry confused MainUI's search results on some
+    # setups. Opt in with "fav_shortcut": true in kidmode.json.
+    if [ "$(config_get fav_shortcut)" != "true" ]; then
         if grep -qF "/App/KidsMode/launch.sh" "$favfile" 2> /dev/null; then
             grep -vF "/App/KidsMode/launch.sh" "$favfile" > "$favfile.tmp" &&
                 mv -f "$favfile.tmp" "$favfile"
             sync
+            log "Removed Kid Mode shortcut from favorites."
         fi
         return 0
     fi
 
     if ! grep -qF "/App/KidsMode/launch.sh" "$favfile" 2> /dev/null; then
+        # Never append onto a final line that lacks its newline
+        if [ -s "$favfile" ] && [ -n "$(tail -c 1 "$favfile")" ]; then
+            echo >> "$favfile"
+        fi
         printf '%s\n' "$fav_entry" >> "$favfile"
         sync
         log "Added Kid Mode shortcut to favorites."
     fi
+}
+
+# --------------------------- session timer picker --------------------------
+# Shown right after arming: LEFT/RIGHT picks OFF / 5 / 10 / ... / 50 minutes
+# (default OFF). Selecting a value starts a fresh budget for this session.
+
+pick_session_timer() {
+    rm -f "$uiresult"
+    "$kidui_bin" --pick-timer > "$uilog" 2>&1
+    picker_rc=$?
+
+    picked=0
+    if [ "$picker_rc" -eq 5 ] && [ "$(sed -n 1p "$uiresult")" = "TIMER" ]; then
+        picked="$(sed -n 2p "$uiresult")"
+        case "$picked" in
+            '' | *[!0-9]*) picked=0 ;;
+        esac
+        [ "$picked" -gt 50 ] && picked=50
+    fi
+    rm -f "$uiresult"
+
+    set_timer_minutes "$picked"
+    state_write 0 0 # fresh budget for this session
+    update_remaining_now
 }
 
 # ------------------------------ parent menu --------------------------------
@@ -606,6 +685,9 @@ disarm() {
     sync
     log "Kid Mode disarmed."
     infoPanel -t "Kid Mode" -m "Unlocked!\nReturning to Onion." --auto
+    # Reset the framebuffer (page/pan) so the relaunched MainUI is actually
+    # visible — without this the screen can stay on our last-flipped page.
+    bootScreen clear 2> /dev/null
 }
 
 # ------------------------------ main loop ----------------------------------
@@ -699,6 +781,7 @@ cmd_run() {
     stop_ticker
     restore_ra_lock
     rm -f "$sysdir/cmd_to_run.sh"
+    bootScreen clear 2> /dev/null
     return 0
 }
 
@@ -725,11 +808,13 @@ cmd_arm() {
         return 1
     fi
 
+    pick_session_timer
+
     apply_ra_lock
     ensure_fav_shortcut
     touch "$flagfile"
     sync
-    log "Kid Mode armed."
+    log "Kid Mode armed (timer: $(get_timer_minutes) min)."
 
     cmd_run
 }
