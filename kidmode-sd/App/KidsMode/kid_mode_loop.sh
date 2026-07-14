@@ -759,7 +759,7 @@ cmd_run() {
                     fi
                 else
                     # Also rate-limits guessing: the message takes ~4s
-                    infoPanel -t "Kid Mode" -m "Wrong PIN" --auto
+                    infoPanel -t "Kid Mode" -m "Wrong PIN\n \nForgot it? On a computer, set\npin_plain in App/KidsMode/kidmode.json" --auto
                 fi
                 ;;
             *) # UI crashed or won't start
