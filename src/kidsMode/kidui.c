@@ -160,6 +160,24 @@ static void loadThemeAccent(void)
     cJSON_Delete(theme_root);
 }
 
+// On the Miyoo, image files come out of the loader 180°-rotated relative
+// to text rendering — Onion's own theme_backgroundLoad() corrects this by
+// rotating every loaded image (see common/theme/background.h). Do the same
+// for box art. Rects and TTF text must NOT be rotated.
+static void rotate180InPlace(SDL_Surface *surface)
+{
+    if (surface == NULL || surface->format->BytesPerPixel != 4)
+        return;
+    uint32_t *pixels = (uint32_t *)surface->pixels;
+    int pitch = surface->pitch / 4;
+    int total = surface->h * pitch;
+    for (int i = 0, j = total - 1; i < j; i++, j--) {
+        uint32_t tmp = pixels[i];
+        pixels[i] = pixels[j];
+        pixels[j] = tmp;
+    }
+}
+
 // The device's libSDL_rotozoom flips zoomed surfaces vertically, so scale
 // box art ourselves (simple bilinear, ARGB8888 in and out).
 static SDL_Surface *scaleSurface(SDL_Surface *src, int dst_w, int dst_h)
@@ -352,14 +370,18 @@ static void loadArtwork(void)
     double scale_h = max_h / raw->h;
     double scale = scale_w < scale_h ? scale_w : scale_h;
 
-    if (scale > 0.0 && (scale < 0.999 || scale > 1.001)) {
-        SDL_Surface *scaled = scaleSurface(raw, (int)(raw->w * scale + 0.5),
-                                           (int)(raw->h * scale + 0.5));
-        if (scaled != NULL) {
-            SDL_FreeSurface(raw);
-            raw = scaled;
-        }
+    // Always run through the scaler: it also normalizes to 32-bit ARGB,
+    // which rotate180InPlace below relies on.
+    SDL_Surface *scaled = scaleSurface(raw, (int)(raw->w * scale + 0.5),
+                                       (int)(raw->h * scale + 0.5));
+    if (scaled != NULL) {
+        SDL_FreeSurface(raw);
+        raw = scaled;
     }
+
+#ifdef PLATFORM_MIYOOMINI
+    rotate180InPlace(raw);
+#endif
 
     artwork = SDL_DisplayFormatAlpha(raw);
     if (artwork == NULL)
@@ -540,10 +562,10 @@ static void renderPin(const char *title, TTF_Font *font_title,
                  i == pin_cursor ? COLOR_ACCENT : COLOR_WHITE, 0);
     }
 
-    drawText("UP/DOWN: change    LEFT/RIGHT: move", cx,
+    drawText("UP/DOWN: change    A: next digit", cx,
              (int)(g_display.height * 0.68), font_small, COLOR_DIM,
              g_display.width - 40);
-    drawText("A: confirm    B: back", cx, (int)(g_display.height * 0.75),
+    drawText("START: confirm    B: back", cx, (int)(g_display.height * 0.75),
              font_small, COLOR_DIM, g_display.width - 40);
 }
 
@@ -817,6 +839,13 @@ int main(int argc, char *argv[])
                     dirty = true;
                     break;
                 case SW_BTN_A:
+                    // A confirms the current digit and moves right — easy to
+                    // hit mid-entry, so it must never submit a partial PIN
+                    if (pin_cursor < PIN_LEN - 1) {
+                        pin_cursor++;
+                        dirty = true;
+                    }
+                    break;
                 case SW_BTN_START: {
                     char pin_str[8];
                     snprintf(pin_str, sizeof(pin_str), "%d%d%d%d",

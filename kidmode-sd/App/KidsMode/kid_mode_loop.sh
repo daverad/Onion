@@ -758,8 +758,8 @@ cmd_run() {
                         return 0
                     fi
                 else
-                    # Wrong PIN: silently return to the grid (rate-limited)
-                    sleep 1
+                    # Also rate-limits guessing: the message takes ~4s
+                    infoPanel -t "Kid Mode" -m "Wrong PIN" --auto
                 fi
                 ;;
             *) # UI crashed or won't start
