@@ -30,6 +30,9 @@ flagfile=/mnt/SDCARD/.kidmode
 favfile=/mnt/SDCARD/Roms/favourite.json
 racfg=/mnt/SDCARD/RetroArch/.retroarch/retroarch.cfg
 rabackup="$appdir/retroarch.cfg.kidmode-backup"
+keymapcfg=/mnt/SDCARD/.tmp_update/config/keymap.json
+keymapbackup="$appdir/keymap.json.kidmode-backup"
+keymapnone="$appdir/.keymap-was-absent"
 logfile=/mnt/SDCARD/.tmp_update/logs/kidmode.log
 
 timer_state="$appdir/timer_state.txt" # 3 lines: day / used seconds / bonus seconds
@@ -215,6 +218,50 @@ restore_ra_lock() {
         rm -f "$rabackup"
         sync
         log "RetroArch config restored."
+    fi
+}
+
+# ------------------------- MENU button override ----------------------------
+# While armed, a single press of the MENU button in-game saves and exits
+# straight back to the kid launcher (keymap ingame_single_press = 2,
+# "exit to menu") instead of opening the GameSwitcher overlay, which could
+# expose the parent's recent games. keymon reads keymap.json at startup, so
+# it is restarted after the change. Original keymap restored on unlock.
+
+apply_keymap_override() {
+    if [ -f "$keymapcfg" ]; then
+        [ -f "$keymapbackup" ] || cp "$keymapcfg" "$keymapbackup"
+        tmpkm=/tmp/kidmode_keymap.$$
+        if jq '.ingame_single_press = 2' "$keymapcfg" > "$tmpkm" 2> /dev/null; then
+            mv -f "$tmpkm" "$keymapcfg"
+        else
+            rm -f "$tmpkm"
+        fi
+    else
+        touch "$keymapnone"
+        printf '{\n    "ingame_single_press": 2\n}\n' > "$keymapcfg"
+    fi
+    sync
+    killall keymon 2> /dev/null
+    keymon &
+    log "MENU button set to exit-to-launcher while armed."
+}
+
+restore_keymap_override() {
+    keymap_restored=0
+    if [ -f "$keymapnone" ]; then
+        rm -f "$keymapcfg" "$keymapnone"
+        keymap_restored=1
+    elif [ -f "$keymapbackup" ]; then
+        cp "$keymapbackup" "$keymapcfg"
+        rm -f "$keymapbackup"
+        keymap_restored=1
+    fi
+    if [ "$keymap_restored" = "1" ]; then
+        sync
+        killall keymon 2> /dev/null
+        keymon &
+        log "keymap.json restored."
     fi
 }
 
@@ -668,8 +715,27 @@ parent_menu() {
             UNLOCK)
                 return 0
                 ;;
-            BONUS)
-                add_bonus 300
+            ADDTIME)
+                # Same horizontal picker as the arm screen; B cancels
+                rm -f "$uiresult"
+                "$kidui_bin" --pick-timer --no-off -t "Add play time" > "$uilog" 2>&1
+                if [ $? -eq 5 ] && [ "$(sed -n 1p "$uiresult")" = "TIMER" ]; then
+                    added_min="$(sed -n 2p "$uiresult")"
+                    rm -f "$uiresult"
+                    case "$added_min" in
+                        '' | *[!0-9]* | 0) ;;
+                        *)
+                            add_bonus $((added_min * 60))
+                            new_rem="$(timer_remaining)"
+                            if [ "$new_rem" -ge 0 ]; then
+                                infoPanel -t "Kid Mode" -m "Added $added_min minutes!\nTime left: $(((new_rem + 59) / 60)) minutes" --auto
+                            fi
+                            # Straight back to the kid so he can play
+                            return 1
+                            ;;
+                    esac
+                fi
+                # Canceled: back to the parent menu
                 ;;
             TIMER)
                 case "$menu_val" in
@@ -687,6 +753,7 @@ disarm() {
     rm -f "$flagfile"
     stop_ticker
     restore_ra_lock
+    restore_keymap_override
     ensure_fav_shortcut
     rm -f "$sysdir/cmd_to_run.sh" "$uiresult"
     sync
@@ -780,6 +847,7 @@ cmd_run() {
     # Flag removed externally (e.g. deleted from a computer) — clean up
     stop_ticker
     restore_ra_lock
+    restore_keymap_override
     rm -f "$sysdir/cmd_to_run.sh"
     bootScreen clear 2> /dev/null
     return 0
@@ -811,6 +879,7 @@ cmd_arm() {
     pick_session_timer
 
     apply_ra_lock
+    apply_keymap_override
     ensure_fav_shortcut
     touch "$flagfile"
     sync

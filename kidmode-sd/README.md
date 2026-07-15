@@ -22,8 +22,11 @@ young child can use it unsupervised. Requires **Onion OS 4.3 or newer**
   exact spot, so nothing is lost) before a friendly "Time's up!" screen.
   The timer counts actual play time — sleeping pauses it and rebooting
   doesn't reset it.
-- **Parent menu** behind the PIN: Exit Kid Mode, +5 minutes today, or
-  change the daily timer.
+- **Parent menu** behind the PIN: Exit Kid Mode, Add play time (same
+  horizontal picker as arming; shows a confirmation with the new total and
+  returns straight to the kid launcher), or change the timer.
+- While armed, a single press of the **MENU button in-game saves and exits
+  back to the kid launcher** (keymap override, restored on unlock).
 - Optional: a "Kid Mode" entry in Onion's Favorites tab (off by default —
   it confused MainUI's search results on some setups; opt in with
   `"fav_shortcut": true` in `kidmode.json`).
@@ -70,9 +73,10 @@ folder by the `Build Kid Mode UI` GitHub workflow; see "Rebuilding" below).
 3. Hand it over. Browsing: left/right. Play: A. Everything else does nothing.
 4. Parent access: hold **SELECT+START ~3 s** until the PIN screen appears,
    dial the PIN (up/down changes a digit, left/right moves), press A.
-   A wrong PIN silently returns to the carousel. A correct PIN opens the
-   **parent menu**: *Exit Kid Mode*, *+5 minutes today*, *Timer*
-   (left/right in 5-minute steps, OFF-50), *Back*.
+   A wrong PIN shows a brief message with the reset hint. A correct PIN
+   opens the **parent menu**: *Exit Kid Mode*, *Add play time* (picker,
+   5-50 min; confirms with the new total and returns to the kid screen),
+   *Timer* (left/right, OFF-50), *Back*.
 5. Every arm starts with the timer picker (default OFF). With a timer on,
    the kid sees a small "N min" chip on the carousel and in the top-left
    corner during games, gets 3/2/1-minute badges, and lands on "Time's

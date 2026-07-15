@@ -18,6 +18,9 @@
 //   kidui --parent-menu --timer N --remaining S
 //                                  post-PIN parent menu (N = configured
 //                                  minutes/day, S = seconds left, -1 = off)
+//   kidui --pick-timer --no-off -t "Add play time"
+//                                  minutes picker without an OFF option;
+//                                  B cancels (exit 1) instead of choosing 0
 //
 // Play timer: kid_mode_loop.sh's ticker writes the remaining seconds to
 // /tmp/kidmode_remaining. The carousel shows it as a small chip and flips
@@ -515,7 +518,7 @@ static void renderMenu(int selected, int timer_minutes, int remaining,
 
     const char *items[MENU_COUNT];
     items[MENU_UNLOCK] = "Exit Kid Mode";
-    items[MENU_BONUS] = "+5 minutes today";
+    items[MENU_BONUS] = "Add play time";
     items[MENU_TIMER] = timer_label;
     items[MENU_BACK] = "Back";
 
@@ -580,13 +583,14 @@ static void renderHoldBar(uint32_t held_ms)
     fillRect(0, 0, w, 6, ACCENT_HEX);
 }
 
-static void renderPickTimer(int minutes, TTF_Font *font_title,
-                            TTF_Font *font_big, TTF_Font *font_small)
+static void renderPickTimer(const char *title, int minutes, bool no_off,
+                            TTF_Font *font_title, TTF_Font *font_big,
+                            TTF_Font *font_small)
 {
     fillRect(0, 0, g_display.width, g_display.height, BG_COLOR);
     int cx = g_display.width / 2;
 
-    drawText("Play timer", cx, (int)(g_display.height * 0.2), font_title,
+    drawText(title, cx, (int)(g_display.height * 0.2), font_title,
              COLOR_WHITE, g_display.width - 40);
 
     char value[32];
@@ -602,11 +606,13 @@ static void renderPickTimer(int minutes, TTF_Font *font_title,
     drawText(">", (int)(g_display.width * 0.82), (int)(g_display.height * 0.45),
              font_title, COLOR_DIM, 0);
 
-    drawText("LEFT/RIGHT: change    A: start", cx,
-             (int)(g_display.height * 0.72), font_small, COLOR_DIM,
+    drawText(no_off ? "LEFT/RIGHT: change    A: confirm"
+                    : "LEFT/RIGHT: change    A: start",
+             cx, (int)(g_display.height * 0.72), font_small, COLOR_DIM,
              g_display.width - 40);
-    drawText("B: no timer", cx, (int)(g_display.height * 0.79), font_small,
-             COLOR_DIM, g_display.width - 40);
+    drawText(no_off ? "B: cancel" : "B: no timer", cx,
+             (int)(g_display.height * 0.79), font_small, COLOR_DIM,
+             g_display.width - 40);
 }
 
 static void flip(void)
@@ -620,9 +626,10 @@ int main(int argc, char *argv[])
     bool set_pin_mode = false;
     bool menu_mode = false;
     bool pick_timer_mode = false;
+    bool picker_no_off = false;
     int menu_timer_minutes = 0;
     int menu_remaining = -1;
-    char pin_title[STR_MAX] = "Enter PIN";
+    char pin_title[STR_MAX] = "";
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--set-pin") == 0)
@@ -631,6 +638,8 @@ int main(int argc, char *argv[])
             menu_mode = true;
         else if (strcmp(argv[i], "--pick-timer") == 0)
             pick_timer_mode = true;
+        else if (strcmp(argv[i], "--no-off") == 0)
+            picker_no_off = true;
         else if (strcmp(argv[i], "--timer") == 0 && i + 1 < argc)
             menu_timer_minutes = atoi(argv[++i]);
         else if (strcmp(argv[i], "--remaining") == 0 && i + 1 < argc)
@@ -675,8 +684,13 @@ int main(int argc, char *argv[])
     }
     else if (pick_timer_mode) {
         active_screen = SCREEN_PICKTIMER;
-        menu_timer_minutes = 0; // default: no timer
+        // Arm flow defaults to no timer; add-time flow starts at one step
+        menu_timer_minutes = picker_no_off ? TIMER_STEP : 0;
+        if (strlen(pin_title) == 0)
+            strncpy(pin_title, "Play timer", STR_MAX - 1);
     }
+    if (strlen(pin_title) == 0)
+        strncpy(pin_title, "Enter PIN", STR_MAX - 1);
     else {
         loadFavorites();
         remaining = readRemaining();
@@ -737,8 +751,8 @@ int main(int argc, char *argv[])
                 case SW_BTN_LEFT:
                 case SW_BTN_DOWN:
                     menu_timer_minutes -= TIMER_STEP;
-                    if (menu_timer_minutes < 0)
-                        menu_timer_minutes = 0;
+                    if (menu_timer_minutes < (picker_no_off ? TIMER_STEP : 0))
+                        menu_timer_minutes = picker_no_off ? TIMER_STEP : 0;
                     dirty = true;
                     break;
                 case SW_BTN_A:
@@ -752,10 +766,17 @@ int main(int argc, char *argv[])
                     break;
                 }
                 case SW_BTN_B:
-                    // B = the default: no timer
-                    writeResult("TIMER", "0", NULL);
-                    exit_code = 5;
-                    quit = true;
+                    if (picker_no_off) {
+                        // add-time flow: B cancels
+                        exit_code = 1;
+                        quit = true;
+                    }
+                    else {
+                        // arm flow: B = the default, no timer
+                        writeResult("TIMER", "0", NULL);
+                        exit_code = 5;
+                        quit = true;
+                    }
                     break;
                 default:
                     break;
@@ -795,7 +816,7 @@ int main(int argc, char *argv[])
                         quit = true;
                     }
                     else if (menu_selected == MENU_BONUS) {
-                        writeResult("MENU", "BONUS", NULL);
+                        writeResult("MENU", "ADDTIME", NULL);
                         exit_code = 5;
                         quit = true;
                     }
@@ -966,8 +987,8 @@ int main(int argc, char *argv[])
                            font_title, font_menu, font_small);
                 break;
             case SCREEN_PICKTIMER:
-                renderPickTimer(menu_timer_minutes, font_title, font_digit,
-                                font_small);
+                renderPickTimer(pin_title, menu_timer_minutes, picker_no_off,
+                                font_title, font_digit, font_small);
                 break;
             }
             if (hold_started != 0)
