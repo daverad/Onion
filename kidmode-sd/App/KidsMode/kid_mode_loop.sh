@@ -301,6 +301,17 @@ notify_game() {
     sendUDP "SHOW_MSG $1" > /dev/null 2>&1 &
 }
 
+# RA's OSD messages last ~3 s; re-pushing the same text every ~2 s makes it
+# render as one continuous message. Covers one 10 s ticker interval.
+pin_message() {
+    (
+        for _i in 1 2 3 4 5; do
+            sendUDP "SHOW_MSG $1" > /dev/null 2>&1
+            sleep 2
+        done
+    ) &
+}
+
 game_is_running() {
     pgrep -f "cmd_to_run.sh" > /dev/null 2>&1
 }
@@ -363,17 +374,18 @@ ticker_loop() {
             # erased by RA's per-frame redraw AND draw in panel-native
             # coordinates — rotated 180° from the viewed image — so they
             # only produce a brief flipped flash. Not used during games.)
-            if [ "$rem" -gt 0 ] && [ "$rem_min" != "$last_notified_min" ]; then
-                last_notified_min="$rem_min"
-                if [ "$rem_min" -le 5 ]; then
-                    if [ "$rem_min" -eq 1 ]; then
-                        notify_game "1 minute left!"
-                    else
+            if [ "$rem" -gt 0 ]; then
+                if [ "$rem_min" -eq 1 ]; then
+                    # Final minute: keep the warning pinned on screen
+                    pin_message "1 minute left!"
+                elif [ "$rem_min" != "$last_notified_min" ]; then
+                    if [ "$rem_min" -le 5 ]; then
+                        notify_game "$rem_min minutes left"
+                    elif [ $((rem_min % 5)) -eq 0 ]; then
                         notify_game "$rem_min minutes left"
                     fi
-                elif [ $((rem_min % 5)) -eq 0 ]; then
-                    notify_game "$rem_min minutes left"
                 fi
+                last_notified_min="$rem_min"
             fi
 
             if [ "$rem" -le 0 ]; then
