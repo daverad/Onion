@@ -1,7 +1,7 @@
 {
-    "label": "Kid Mode",
+    "label": "Kids Mode",
     "icon": "../../Icons/Default/app/guest_on.png",
     "iconsel": "",
     "launch": "launch.sh",
-    "description": "Lock the device to favorites only (SELECT+START + PIN to exit)"
+    "description": "Curate Games, Simple UI, Timer..."
 }

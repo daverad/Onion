@@ -65,10 +65,9 @@ typedef enum { SCREEN_CAROUSEL,
                SCREEN_CONFIRM_RESTART } Screen;
 
 #define MENU_UNLOCK 0
-#define MENU_BONUS 1
-#define MENU_TIMER 2
-#define MENU_BACK 3
-#define MENU_COUNT 4
+#define MENU_ADDTIME 1
+#define MENU_BACK 2
+#define MENU_COUNT 3
 #define TIMER_STEP 5
 #define TIMER_MAX 50
 #define SYSTEM_JSON "/mnt/SDCARD/system.json"
@@ -509,9 +508,8 @@ static void renderTimesUp(TTF_Font *font_title, TTF_Font *font_small)
              g_display.width - 40);
 }
 
-static void renderMenu(int selected, int timer_minutes, int remaining,
-                       TTF_Font *font_title, TTF_Font *font_menu,
-                       TTF_Font *font_small)
+static void renderMenu(int selected, int remaining, TTF_Font *font_title,
+                       TTF_Font *font_menu, TTF_Font *font_small)
 {
     fillRect(0, 0, g_display.width, g_display.height, BG_COLOR);
     int cx = g_display.width / 2;
@@ -521,23 +519,15 @@ static void renderMenu(int selected, int timer_minutes, int remaining,
 
     if (remaining >= 0) {
         char info[64];
-        snprintf(info, sizeof(info), "Time left today: %d min",
+        snprintf(info, sizeof(info), "Time left: %d min",
                  (remaining + 59) / 60);
         drawText(info, cx, (int)(g_display.height * 0.24), font_small,
                  COLOR_DIM, g_display.width - 40);
     }
 
-    char timer_label[64];
-    if (timer_minutes > 0)
-        snprintf(timer_label, sizeof(timer_label), "< Timer: %d min >",
-                 timer_minutes);
-    else
-        snprintf(timer_label, sizeof(timer_label), "< Timer: OFF >");
-
     const char *items[MENU_COUNT];
     items[MENU_UNLOCK] = "Exit Kid Mode";
-    items[MENU_BONUS] = "Add play time";
-    items[MENU_TIMER] = timer_label;
+    items[MENU_ADDTIME] = "Add play time";
     items[MENU_BACK] = "Back";
 
     for (int i = 0; i < MENU_COUNT; i++) {
@@ -553,14 +543,27 @@ static void renderMenu(int selected, int timer_minutes, int remaining,
     }
 }
 
-static void renderPin(const char *title, TTF_Font *font_title,
-                      TTF_Font *font_digit, TTF_Font *font_small)
+static void renderPin(const char *title, bool show_intro,
+                      TTF_Font *font_title, TTF_Font *font_digit,
+                      TTF_Font *font_small)
 {
     fillRect(0, 0, g_display.width, g_display.height, BG_COLOR);
     int cx = g_display.width / 2;
 
     drawText(title, cx, (int)(g_display.height * 0.22), font_title,
              COLOR_WHITE, g_display.width - 40);
+
+    if (show_intro) {
+        drawText("Kids Mode shows only your favorited games", cx,
+                 (int)(g_display.height * 0.3), font_small, COLOR_DIM,
+                 g_display.width - 40);
+        drawText("Timer, start-over, and kid-simple controls", cx,
+                 (int)(g_display.height * 0.84), font_small, COLOR_DIM,
+                 g_display.width - 40);
+        drawText("Hold SELECT+START in Kids Mode for the parent menu", cx,
+                 (int)(g_display.height * 0.9), font_small, COLOR_DIM,
+                 g_display.width - 30);
+    }
 
     int box_w = (int)(g_display.width * 0.11);
     int box_h = (int)(g_display.height * 0.19);
@@ -835,38 +838,14 @@ int main(int argc, char *argv[])
                     menu_selected = (menu_selected + 1) % MENU_COUNT;
                     dirty = true;
                     break;
-                case SW_BTN_LEFT:
-                    if (menu_selected == MENU_TIMER) {
-                        menu_timer_minutes -= TIMER_STEP;
-                        if (menu_timer_minutes < 0)
-                            menu_timer_minutes = 0;
-                        dirty = true;
-                    }
-                    break;
-                case SW_BTN_RIGHT:
-                    if (menu_selected == MENU_TIMER) {
-                        menu_timer_minutes += TIMER_STEP;
-                        if (menu_timer_minutes > TIMER_MAX)
-                            menu_timer_minutes = TIMER_MAX;
-                        dirty = true;
-                    }
-                    break;
                 case SW_BTN_A:
                     if (menu_selected == MENU_UNLOCK) {
                         writeResult("MENU", "UNLOCK", NULL);
                         exit_code = 5;
                         quit = true;
                     }
-                    else if (menu_selected == MENU_BONUS) {
+                    else if (menu_selected == MENU_ADDTIME) {
                         writeResult("MENU", "ADDTIME", NULL);
-                        exit_code = 5;
-                        quit = true;
-                    }
-                    else if (menu_selected == MENU_TIMER) {
-                        char minutes_str[16];
-                        snprintf(minutes_str, sizeof(minutes_str), "%d",
-                                 menu_timer_minutes);
-                        writeResult("MENU", "TIMER", minutes_str);
                         exit_code = 5;
                         quit = true;
                     }
@@ -1019,14 +998,15 @@ int main(int argc, char *argv[])
                 renderEmpty(font_title, font_small);
                 break;
             case SCREEN_PIN:
-                renderPin(pin_title, font_title, font_digit, font_small);
+                renderPin(pin_title, set_pin_mode, font_title, font_digit,
+                          font_small);
                 break;
             case SCREEN_TIMESUP:
                 renderTimesUp(font_title, font_menu);
                 break;
             case SCREEN_MENU:
-                renderMenu(menu_selected, menu_timer_minutes, menu_remaining,
-                           font_title, font_menu, font_small);
+                renderMenu(menu_selected, menu_remaining, font_title,
+                           font_menu, font_small);
                 break;
             case SCREEN_PICKTIMER:
                 renderPickTimer(pin_title, menu_timer_minutes, picker_no_off,

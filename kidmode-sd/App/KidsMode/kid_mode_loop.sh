@@ -171,11 +171,11 @@ ensure_pin() {
         return 0
     fi
 
-    pin1="$(run_pin_entry "Set Kid Mode PIN")" || return 1
+    pin1="$(run_pin_entry "Set Kids Mode PIN")" || return 1
     pin2="$(run_pin_entry "Confirm PIN")" || return 1
 
     if [ "$pin1" != "$pin2" ]; then
-        infoPanel -t "Kid Mode" -m "PINs did not match.\nTry again." --auto
+        infoPanel -t "Kids Mode" -m "PINs did not match.\nTry again." --auto
         return 1
     fi
 
@@ -312,16 +312,11 @@ state_write() { # $1 used, $2 bonus
     mv -f "$timer_state.tmp" "$timer_state"
 }
 
-state_day_check() {
-    if [ "$(state_day)" != "$(date +%Y-%m-%d)" ]; then
-        state_write 0 0
-    fi
-}
-
 # Recompute and publish remaining seconds right now (clamped to >= 0;
 # file absent = timer off). Called by the ticker and after menu changes.
+# NB: the budget is per SESSION (set at arm / extended via Add play time);
+# there is no daily reset — a new arm starts a fresh budget.
 update_remaining_now() {
-    state_day_check
     budget=$(($(get_timer_minutes) * 60 + $(state_bonus)))
     if [ "$budget" -le 0 ]; then
         rm -f "$remaining_file"
@@ -343,7 +338,6 @@ timer_remaining() {
 }
 
 add_bonus() {
-    state_day_check
     state_write "$(state_used)" "$(($(state_bonus) + $1))"
     update_remaining_now
     log "Bonus play time added: $1 s"
@@ -409,7 +403,6 @@ ticker_loop() {
         [ -f "$flagfile" ] || break
         [ -f /tmp/shutting_down ] && break
 
-        state_day_check
         budget=$(($(get_timer_minutes) * 60 + $(state_bonus)))
         if [ "$budget" -le 0 ]; then
             rm -f "$remaining_file"
@@ -679,7 +672,7 @@ install_hook() {
 # so arming is one tap without visiting Apps. kidui filters this entry out
 # of the kid carousel. Disable with "fav_shortcut": false in kidmode.json.
 
-fav_entry='{"label":"Kid Mode","launch":"/mnt/SDCARD/App/KidsMode/launch.sh","type":5,"imgpath":"/mnt/SDCARD/Icons/Default/app/guest_on.png","rompath":"/mnt/SDCARD/App/KidsMode/launch.sh"}'
+fav_entry='{"label":"Kids Mode","launch":"/mnt/SDCARD/App/KidsMode/launch.sh","type":5,"imgpath":"/mnt/SDCARD/Icons/Default/app/guest_on.png","rompath":"/mnt/SDCARD/App/KidsMode/launch.sh"}'
 
 # An earlier version appended the shortcut without checking that the file
 # ended in a newline, which could glue two JSON entries onto one line and
@@ -752,7 +745,7 @@ pick_session_timer() {
 parent_menu() {
     while :; do
         rm -f "$uiresult"
-        "$kidui_bin" --parent-menu --timer "$(get_timer_minutes)" \
+        "$kidui_bin" --parent-menu \
             --remaining "$(timer_remaining)" > "$uilog" 2>&1
         menu_rc=$?
 
@@ -762,7 +755,6 @@ parent_menu() {
         fi
 
         menu_action="$(sed -n 2p "$uiresult")"
-        menu_val="$(sed -n 3p "$uiresult")"
         rm -f "$uiresult"
         case "$menu_action" in
             UNLOCK)
@@ -779,22 +771,18 @@ parent_menu() {
                         '' | *[!0-9]* | 0) ;;
                         *)
                             add_bonus $((added_min * 60))
-                            new_rem="$(timer_remaining)"
-                            if [ "$new_rem" -ge 0 ]; then
-                                infoPanel -t "Kid Mode" -m "Added $added_min minutes!\nTime left: $(((new_rem + 59) / 60)) minutes" --auto
-                            fi
+                            # Receipt: played / total granted / remaining
+                            rcpt_used="$(state_used)"
+                            rcpt_total=$(($(get_timer_minutes) * 60 + $(state_bonus)))
+                            rcpt_rem="$(timer_remaining)"
+                            [ "$rcpt_rem" -lt 0 ] && rcpt_rem=0
+                            infoPanel -t "Kids Mode" -m "Added $added_min min (total $((rcpt_total / 60)) min)\nPlayed: $((rcpt_used / 60)) min\nTime left: $(((rcpt_rem + 59) / 60)) min" --auto
                             # Straight back to the kid so he can play
                             return 1
                             ;;
                     esac
                 fi
                 # Canceled: back to the parent menu
-                ;;
-            TIMER)
-                case "$menu_val" in
-                    '' | *[!0-9]*) ;;
-                    *) set_timer_minutes "$menu_val" ;;
-                esac
                 ;;
         esac
     done
@@ -811,7 +799,7 @@ disarm() {
     rm -f "$sysdir/cmd_to_run.sh" "$uiresult"
     sync
     log "Kid Mode disarmed."
-    infoPanel -t "Kid Mode" -m "Unlocked!\nReturning to Onion." --auto
+    infoPanel -t "Kids Mode" -m "Unlocked!\nReturning to Onion." --auto
     # Reset the framebuffer (page/pan) so the relaunched MainUI is actually
     # visible — without this the screen can stay on our last-flipped page.
     bootScreen clear 2> /dev/null
@@ -887,7 +875,7 @@ cmd_run() {
                     fi
                 else
                     # Also rate-limits guessing: the message takes ~4s
-                    infoPanel -t "Kid Mode" -m "Wrong PIN\n \nForgot it? On a computer, set\npin_plain in App/KidsMode/kidmode.json" --auto
+                    infoPanel -t "Kids Mode" -m "Wrong PIN\n \nForgot it? On a computer, set\npin_plain in App/KidsMode/kidmode.json" --auto
                 fi
                 ;;
             *) # UI crashed or won't start
@@ -896,7 +884,7 @@ cmd_run() {
                 if [ "$ui_fails" -ge 3 ]; then
                     # Fail open: a broken Kid Mode must never brick the
                     # device. Parent can re-arm after fixing the SD card.
-                    infoPanel -t "Kid Mode" -m "Kid Mode UI failed.\nReturning to normal Onion." --auto
+                    infoPanel -t "Kids Mode" -m "Kids Mode UI failed.\nReturning to normal Onion." --auto
                     disarm
                     return 1
                 fi
@@ -916,24 +904,24 @@ cmd_run() {
 
 cmd_arm() {
     if [ ! -f "$kidui_bin" ]; then
-        infoPanel -t "Kid Mode" -m "kidui binary is missing.\nReinstall the KidsMode app." --auto
+        infoPanel -t "Kids Mode" -m "kidui binary is missing.\nReinstall the KidsMode app." --auto
         return 1
     fi
 
     fav_count=0
     [ -f "$favfile" ] && fav_count=$(grep -c "rompath" "$favfile" 2> /dev/null)
     if [ "$fav_count" -eq 0 ]; then
-        infoPanel -t "Kid Mode" -m "No favorites found.\nAdd some favorites first,\nthen arm Kid Mode." --auto
+        infoPanel -t "Kids Mode" -m "No favorites found.\nAdd some favorites first,\nthen arm Kids Mode." --auto
         return 1
     fi
 
     if ! install_hook; then
-        infoPanel -t "Kid Mode" -m "kidmode_boot.sh is missing.\nReinstall the KidsMode app." --auto
+        infoPanel -t "Kids Mode" -m "kidmode_boot.sh is missing.\nReinstall the KidsMode app." --auto
         return 1
     fi
 
     if ! ensure_pin; then
-        infoPanel -t "Kid Mode" -m "PIN setup canceled.\nKid Mode was NOT armed." --auto
+        infoPanel -t "Kids Mode" -m "PIN setup canceled.\nKids Mode was NOT armed." --auto
         return 1
     fi
 

@@ -15,16 +15,16 @@ young child can use it unsupervised. Requires **Onion OS 4.3 or newer**
 - Survives reboots: the mode flag lives on the SD card.
 - While armed, RetroArch's settings are hidden (kiosk mode) so the in-game
   menu can't be used to change cores/shaders/mappings. Restored on unlock.
-- **Play timer**: every arm asks how long (OFF / 5-50 min in 5-min steps,
-  default OFF). A small remaining-time chip sits in the top-left corner
-  during gameplay, warning badges appear at 3/2/1 minutes left, and at zero
-  the game is asked to quit gracefully (Onion's auto-save snapshots the
-  exact spot, so nothing is lost) before a friendly "Time's up!" screen.
-  The timer counts actual play time — sleeping pauses it and rebooting
-  doesn't reset it.
-- **Parent menu** behind the PIN: Exit Kid Mode, Add play time (same
-  horizontal picker as arming; shows a confirmation with the new total and
-  returns straight to the kid launcher), or change the timer.
+- **Play timer** (per session): every arm asks how long (OFF / 5-50 min in
+  5-min steps, default OFF). The countdown shows via RetroArch's on-screen
+  messages (announcement at start, every 5 minutes, pinned on screen for
+  the last 5), and at zero the game is asked to quit gracefully (Onion's
+  auto-save snapshots the exact spot, so nothing is lost) before a friendly
+  "Time's up!" screen. The timer counts actual play time — sleeping pauses
+  it and rebooting doesn't reset it; a new arm starts a fresh budget.
+- **Parent menu** behind the PIN: Exit Kid Mode, or Add play time (same
+  horizontal picker as arming; shows played / total / remaining and returns
+  straight to the kid launcher).
 - While armed, a single press of the **MENU button in-game saves and exits
   back to the kid launcher** (keymap override, restored on unlock).
 - Optional: a "Kid Mode" entry in Onion's Favorites tab (off by default —
@@ -79,13 +79,12 @@ folder by the `Build Kid Mode UI` GitHub workflow; see "Rebuilding" below).
    dial the PIN (up/down changes a digit, left/right moves), press A.
    A wrong PIN shows a brief message with the reset hint. A correct PIN
    opens the **parent menu**: *Exit Kid Mode*, *Add play time* (picker,
-   5-50 min; confirms with the new total and returns to the kid screen),
-   *Timer* (left/right, OFF-50), *Back*.
-5. Every arm starts with the timer picker (default OFF). With a timer on,
-   the kid sees a small "N min" chip on the carousel and in the top-left
-   corner during games, gets 3/2/1-minute badges, and lands on "Time's
-   up!" at zero — where the SELECT+START menu lets you grant +5 minutes
-   on the spot.
+   5-50 min; shows played / total / remaining and returns to the kid
+   screen), *Back*.
+5. Every arm starts with the session timer picker (default OFF). With a
+   timer on, the kid sees a small "N min" chip on the carousel, countdown
+   messages inside games, and lands on "Time's up!" at zero — where the
+   SELECT+START menu lets you add more time on the spot.
 
 ### Changing / resetting the PIN
 
@@ -145,7 +144,7 @@ A log is written to `.tmp_update/logs/kidmode.log`.
    badges at 3/2/1 minutes, game quits at zero into "Time's up!", and
    relaunching the game after +5 minutes resumes exactly where it stopped.
 10. **Timer persistence:** reboot after time is up → still "Time's up!"
-    (no budget reset until the next day).
+    (the budget only resets when you arm again or add time).
 
 ## Rebuilding the kid UI binary
 
