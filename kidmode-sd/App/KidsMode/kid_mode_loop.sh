@@ -35,7 +35,6 @@ logfile=/mnt/SDCARD/.tmp_update/logs/kidmode.log
 timer_state="$appdir/timer_state.txt" # 3 lines: day / used seconds / bonus seconds
 remaining_file=/tmp/kidmode_remaining
 ticker_pid_file=/tmp/kidmode_ticker.pid
-badge_dir="$appdir/res"
 
 # kidui reports results via this file, NOT stdout — the device's SDL/driver
 # stack prints noise on stdout, which broke first-line parsing on hardware.
@@ -194,6 +193,9 @@ apply_ra_lock() {
     [ -f "$rabackup" ] || cp "$racfg" "$rabackup"
 
     ra_set kiosk_mode_enable true
+    # Timer countdown arrives via RetroArch's OSD (SHOW_MSG); make sure
+    # on-screen notifications are enabled while armed
+    ra_set video_font_enable true
     ra_set quick_menu_show_options false
     ra_set quick_menu_show_cheats false
     ra_set quick_menu_show_shaders false
@@ -291,35 +293,6 @@ set_timer_minutes() {
     log "Timer set to $1 min/day."
 }
 
-show_badge() { # $1 = 3|2|1|0 (minutes left)
-    badge="$badge_dir/warn_$1.png"
-    [ -f "$badge" ] || return 0
-    fbw="$(fbset 2> /dev/null | awk '/geometry/ {print $2}')"
-    case "$fbw" in '' | *[!0-9]*) fbw=640 ;; esac
-    imgpop 4 0 "$badge" $(((fbw - 276) / 2)) 12 > /dev/null 2>&1 &
-}
-
-# Persistent remaining-time chip in the top-left corner while a game runs.
-# Updated by the ticker whenever the displayed minute changes.
-chip_shown=""
-
-show_chip() { # $1 = minutes remaining (1..50)
-    chip_min="$1"
-    [ "$chip_min" -gt 50 ] && chip_min=50
-    chip_png="$badge_dir/chips/chip_${chip_min}.png"
-    [ -f "$chip_png" ] || return 0
-    killall imgpop 2> /dev/null
-    imgpop 86400 0 "$chip_png" 8 8 > /dev/null 2>&1 &
-    chip_shown="$chip_min"
-}
-
-hide_chip() {
-    if [ -n "$chip_shown" ]; then
-        killall imgpop 2> /dev/null
-        chip_shown=""
-    fi
-}
-
 # RetroArch redraws the framebuffer every frame, so imgpop overlays are not
 # reliably visible inside games. Use RetroArch's own OSD instead (SHOW_MSG
 # network command — same socket used for the graceful QUIT). Silently
@@ -336,7 +309,6 @@ game_is_running() {
 # normal exit path → Onion auto-save state); escalate only if needed.
 # Non-RetroArch games (ports, standalone) get a plain TERM — best effort.
 save_quit_game() {
-    show_badge 0
     notify_game "Time's up! Saving your game..."
     sleep 2
     if pgrep retroarch > /dev/null 2>&1; then
@@ -387,38 +359,32 @@ ticker_loop() {
                 [ "$rem" -gt 0 ] && notify_game "Play time: $rem_min minutes"
             fi
 
-            # Keep the corner chip in sync with the displayed minute
-            # (visible over non-RetroArch content; RA games use the OSD)
-            if [ "$rem" -gt 0 ] && [ "$rem_min" != "$chip_shown" ]; then
-                show_chip "$rem_min"
-                # OSD countdown: every 10 min, then every minute from 5 down
+            # In-game countdown via RetroArch OSD only. (imgpop overlays are
+            # erased by RA's per-frame redraw AND draw in panel-native
+            # coordinates — rotated 180° from the viewed image — so they
+            # only produce a brief flipped flash. Not used during games.)
+            if [ "$rem" -gt 0 ] && [ "$rem_min" != "$last_notified_min" ]; then
+                last_notified_min="$rem_min"
                 if [ "$rem_min" -le 5 ]; then
                     if [ "$rem_min" -eq 1 ]; then
                         notify_game "1 minute left!"
                     else
                         notify_game "$rem_min minutes left"
                     fi
-                elif [ $((rem_min % 10)) -eq 0 ]; then
+                elif [ $((rem_min % 5)) -eq 0 ]; then
                     notify_game "$rem_min minutes left"
                 fi
             fi
 
-            for t in 180 120 60; do
-                if [ "$prev_rem" -gt "$t" ] && [ "$rem" -le "$t" ] && [ "$rem" -gt 0 ]; then
-                    show_badge $((t / 60))
-                fi
-            done
             if [ "$rem" -le 0 ]; then
-                hide_chip
                 save_quit_game
             fi
         else
             game_seen=0
-            hide_chip
+            last_notified_min=""
         fi
         prev_rem=$rem
     done
-    hide_chip
     rm -f "$remaining_file"
 }
 
@@ -766,13 +732,6 @@ cmd_run() {
 
                 sel_rem="$(timer_remaining)"
                 [ "$sel_rem" = "0" ] && continue # out of time; kidui shows it
-                if [ "$sel_rem" -gt 0 ] && [ "$sel_rem" -le 180 ]; then
-                    # Starting with little time left: overlay a heads-up
-                    (
-                        sleep 6
-                        show_badge $(((sel_rem + 59) / 60))
-                    ) &
-                fi
 
                 build_game_cmd "$sel_launch" "$sel_rompath"
                 run_game_cmd
