@@ -7,9 +7,10 @@
 // Output protocol (written to /tmp/kidmode_ui_result, consumed by
 // kid_mode_loop.sh; stdout is NOT used for results because the device's
 // SDL/driver stack prints noise there):
-//   exit 0:  "LAUNCH" \n <launch path> \n <rom path>
+//   exit 0:  "LAUNCH" \n <launch path> \n <rom path>        (resume)
+//            "LAUNCH_FRESH" \n <launch path> \n <rom path>  (start over)
 //   exit 3:  "PIN" \n <4 digits>
-//   exit 5:  "MENU" \n <UNLOCK|BONUS|TIMER> [\n <minutes>]
+//   exit 5:  "MENU" \n <UNLOCK|ADDTIME|TIMER> [\n <minutes>]
 //   exit 1:  canceled / error / nothing selected (result file removed)
 //
 // Modes:
@@ -60,7 +61,8 @@ typedef enum { SCREEN_CAROUSEL,
                SCREEN_EMPTY,
                SCREEN_TIMESUP,
                SCREEN_MENU,
-               SCREEN_PICKTIMER } Screen;
+               SCREEN_PICKTIMER,
+               SCREEN_CONFIRM_RESTART } Screen;
 
 #define MENU_UNLOCK 0
 #define MENU_BONUS 1
@@ -480,6 +482,22 @@ static void renderTimeChip(int remaining, TTF_Font *font_small)
              (int)(g_display.height * 0.045), font_small, color, 0);
 }
 
+static void renderConfirmRestart(const char *label, TTF_Font *font_title,
+                                 TTF_Font *font_menu, TTF_Font *font_small)
+{
+    fillRect(0, 0, g_display.width, g_display.height, BG_COLOR);
+    int cx = g_display.width / 2;
+    drawText("Start over?", cx, (int)(g_display.height * 0.3), font_title,
+             COLOR_ACCENT, g_display.width - 40);
+    drawText(label, cx, (int)(g_display.height * 0.45), font_menu,
+             COLOR_WHITE, g_display.width - 60);
+    drawText("A: yes - from the beginning", cx,
+             (int)(g_display.height * 0.65), font_small, COLOR_DIM,
+             g_display.width - 40);
+    drawText("B: no - keep my place", cx, (int)(g_display.height * 0.72),
+             font_small, COLOR_DIM, g_display.width - 40);
+}
+
 static void renderTimesUp(TTF_Font *font_title, TTF_Font *font_small)
 {
     fillRect(0, 0, g_display.width, g_display.height, BG_COLOR);
@@ -734,8 +752,30 @@ int main(int argc, char *argv[])
                     exit_code = 0;
                     quit = true;
                     break;
+                case SW_BTN_X:
+                    active_screen = SCREEN_CONFIRM_RESTART;
+                    dirty = true;
+                    break;
                 default:
                     // Everything else is a no-op: no dead-ends for the kid
+                    break;
+                }
+            }
+            else if (active_screen == SCREEN_CONFIRM_RESTART) {
+                switch (changed_key) {
+                case SW_BTN_A:
+                    writeResult("LAUNCH_FRESH", games[current].launch,
+                                games[current].rompath);
+                    exit_code = 0;
+                    quit = true;
+                    break;
+                case SW_BTN_B:
+                case SW_BTN_X:
+                case SW_BTN_MENU:
+                    active_screen = SCREEN_CAROUSEL;
+                    dirty = true;
+                    break;
+                default:
                     break;
                 }
             }
@@ -989,6 +1029,10 @@ int main(int argc, char *argv[])
             case SCREEN_PICKTIMER:
                 renderPickTimer(pin_title, menu_timer_minutes, picker_no_off,
                                 font_title, font_digit, font_small);
+                break;
+            case SCREEN_CONFIRM_RESTART:
+                renderConfirmRestart(games[current].label, font_title,
+                                     font_menu, font_small);
                 break;
             }
             if (hold_started != 0)

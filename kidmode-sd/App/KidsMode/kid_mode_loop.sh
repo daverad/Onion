@@ -511,14 +511,35 @@ EOM
     fi
 }
 
+# "Start over": launch without loading the auto-save snapshot. Same
+# mechanism Onion's runtime.sh uses for its reset-game flag. In-game saves
+# (battery saves etc.) are untouched — only the resume snapshot is skipped.
+reset_cfg=/tmp/kidmode_reset.cfg
+
+strip_reset_appendconfig() { # $1 = emulator launch script
+    [ -n "$1" ] && [ -w "$1" ] || return 0
+    if grep -q "$reset_cfg" "$1" 2> /dev/null; then
+        sed -i "s| --appendconfig \"$reset_cfg\"||g" "$1"
+    fi
+}
+
 # Build $sysdir/cmd_to_run.sh for a favorite exactly like MainUI would,
 # including the per-rom core override (.game_config/<rom>.cfg).
+# $3 = "fresh" to start over instead of resuming.
 build_game_cmd() {
     game_launch="$1"
     game_rompath="$2"
+    game_fresh="${3:-}"
 
     if [ -f "$game_rompath" ]; then
         game_rompath="$(realpath "$game_rompath")"
+    fi
+
+    # Never leave a stale injection behind from an interrupted fresh launch
+    strip_reset_appendconfig "$game_launch"
+
+    if [ "$game_fresh" = "fresh" ]; then
+        printf 'savestate_auto_load = "false"\nconfig_save_on_exit = "false"\n' > "$reset_cfg"
     fi
 
     echo "LD_PRELOAD=$miyoodir/lib/libpadsp.so \"$game_launch\" \"$game_rompath\"" > "$sysdir/cmd_to_run.sh"
@@ -526,12 +547,25 @@ build_game_cmd() {
     game_ext="$(basename "$game_rompath" | awk -F. '{print tolower($NF)}')"
     game_cfg="$(dirname "$game_rompath")/.game_config/$(basename "$game_rompath" ".$game_ext").cfg"
 
+    game_direct=0
     if [ -f "$game_cfg" ] && [ -f "$game_launch" ] &&
         grep -q '.retroarch/cores' "$game_launch"; then
         game_core=$(grep "core\b" "$game_cfg" | awk '{split($0,a,"="); print a[2]}' | awk -F'"' '{print $2}' | tr -d '\n')
         if [ -n "$game_core" ] && [ -f "/mnt/SDCARD/RetroArch/.retroarch/cores/$game_core.so" ]; then
-            echo "LD_PRELOAD=$miyoodir/lib/libpadsp.so ./retroarch -v -L \".retroarch/cores/$game_core.so\" \"$game_rompath\"" > "$sysdir/cmd_to_run.sh"
+            if [ "$game_fresh" = "fresh" ]; then
+                echo "LD_PRELOAD=$miyoodir/lib/libpadsp.so ./retroarch -v --appendconfig \"$reset_cfg\" -L \".retroarch/cores/$game_core.so\" \"$game_rompath\"" > "$sysdir/cmd_to_run.sh"
+            else
+                echo "LD_PRELOAD=$miyoodir/lib/libpadsp.so ./retroarch -v -L \".retroarch/cores/$game_core.so\" \"$game_rompath\"" > "$sysdir/cmd_to_run.sh"
+            fi
+            game_direct=1
         fi
+    fi
+
+    # Fresh launch through the emulator's launch script: inject the
+    # appendconfig into the script like runtime.sh does (removed after)
+    if [ "$game_fresh" = "fresh" ] && [ "$game_direct" -eq 0 ] &&
+        [ -f "$game_launch" ] && grep -q './retroarch -v' "$game_launch"; then
+        sed -i "s|./retroarch -v|& --appendconfig \"$reset_cfg\"|g" "$game_launch"
     fi
 
     # Escape dollar signs in rom filenames, like runtime.sh does
@@ -590,6 +624,10 @@ run_game_cmd() {
     fi
 
     [ -n "$run_rompath" ] && playActivity stop "$run_rompath"
+
+    # Remove any fresh-launch injection from the emulator's launch script
+    strip_reset_appendconfig "$run_launch"
+    rm -f "$reset_cfg"
 
     rm -f "$sysdir/cmd_to_run.sh"
     cd "$appdir" 2> /dev/null
@@ -805,7 +843,11 @@ cmd_run() {
 
         case "$ui_rc" in
             0) # game selected
-                [ "$(sed -n 1p "$uiresult")" = "LAUNCH" ] || continue
+                sel_verb="$(sed -n 1p "$uiresult")"
+                case "$sel_verb" in
+                    LAUNCH | LAUNCH_FRESH) ;;
+                    *) continue ;;
+                esac
                 sel_launch="$(sed -n 2p "$uiresult")"
                 sel_rompath="$(sed -n 3p "$uiresult")"
                 [ -f "$sel_rompath" ] || continue
@@ -813,7 +855,11 @@ cmd_run() {
                 sel_rem="$(timer_remaining)"
                 [ "$sel_rem" = "0" ] && continue # out of time; kidui shows it
 
-                build_game_cmd "$sel_launch" "$sel_rompath"
+                if [ "$sel_verb" = "LAUNCH_FRESH" ]; then
+                    build_game_cmd "$sel_launch" "$sel_rompath" fresh
+                else
+                    build_game_cmd "$sel_launch" "$sel_rompath"
+                fi
                 run_game_cmd
                 ui_fails=0
                 ;;

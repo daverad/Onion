@@ -70,7 +70,11 @@ folder by the `Build Kid Mode UI` GitHub workflow; see "Rebuilding" below).
 1. In normal Onion, favorite the games your kid should see (★).
 2. Apps tab → **Kid Mode**. First time: set + confirm a 4-digit PIN with the
    d-pad. The device immediately switches to the kid launcher.
-3. Hand it over. Browsing: left/right. Play: A. Everything else does nothing.
+3. Hand it over. Browsing: left/right. Play: A (resumes where the game
+   last stopped). Start over: X → "Start over?" → A launches the game from
+   the beginning (in-game saves are untouched; only the resume snapshot is
+   skipped). In-game, one press of MENU saves and exits back to the
+   carousel. Everything else does nothing.
 4. Parent access: hold **SELECT+START ~3 s** until the PIN screen appears,
    dial the PIN (up/down changes a digit, left/right moves), press A.
    A wrong PIN shows a brief message with the reset hint. A correct PIN
