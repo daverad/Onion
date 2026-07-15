@@ -223,7 +223,7 @@ restore_ra_lock() {
 # 0 = no timer). A background ticker counts *consumed* seconds — not wall
 # clock — so sleeping the device pauses the timer and rebooting doesn't
 # reset it (used/bonus persist in timer_state.txt, keyed to the day).
-# Warnings overlay the running game at 3/2/1 minutes left (imgpop);
+# The countdown shows inside games via RetroArch's OSD (see notify_game);
 # at zero RetroArch gets a network QUIT, which triggers Onion's normal
 # auto-save — the game resumes exactly there next launch.
 
