@@ -375,15 +375,16 @@ ticker_loop() {
             # coordinates — rotated 180° from the viewed image — so they
             # only produce a brief flipped flash. Not used during games.)
             if [ "$rem" -gt 0 ]; then
-                if [ "$rem_min" -eq 1 ]; then
-                    # Final minute: keep the warning pinned on screen
-                    pin_message "1 minute left!"
-                elif [ "$rem_min" != "$last_notified_min" ]; then
-                    if [ "$rem_min" -le 5 ]; then
-                        notify_game "$rem_min minutes left"
-                    elif [ $((rem_min % 5)) -eq 0 ]; then
-                        notify_game "$rem_min minutes left"
+                if [ "$rem_min" -le 5 ]; then
+                    # Last 5 minutes: countdown stays pinned on screen
+                    if [ "$rem_min" -eq 1 ]; then
+                        pin_message "1 minute left!"
+                    else
+                        pin_message "$rem_min minutes left"
                     fi
+                elif [ "$rem_min" != "$last_notified_min" ] &&
+                    [ $((rem_min % 5)) -eq 0 ]; then
+                    notify_game "$rem_min minutes left"
                 fi
                 last_notified_min="$rem_min"
             fi
