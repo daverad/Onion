@@ -707,16 +707,18 @@ int main(int argc, char *argv[])
         if (strlen(pin_title) == 0)
             strncpy(pin_title, "Play timer", STR_MAX - 1);
     }
-    if (strlen(pin_title) == 0)
-        strncpy(pin_title, "Enter PIN", STR_MAX - 1);
     else {
         loadFavorites();
+        fprintf(stderr, "kidui: loaded %d favorites\n", games_count);
         remaining = readRemaining();
         if (remaining == 0)
             active_screen = SCREEN_TIMESUP;
         else if (games_count == 0)
             active_screen = SCREEN_EMPTY;
     }
+
+    if (strlen(pin_title) == 0)
+        strncpy(pin_title, "Enter PIN", STR_MAX - 1);
 
     KeyState keystate[320] = {(KeyState)0};
     int exit_code = 1;

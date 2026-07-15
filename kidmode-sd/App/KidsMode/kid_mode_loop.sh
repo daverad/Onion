@@ -28,14 +28,19 @@ kidui_bin="$appdir/bin/kidui"
 configfile="$appdir/kidmode.json"
 flagfile=/mnt/SDCARD/.kidmode
 favfile=/mnt/SDCARD/Roms/favourite.json
+# Backups and state live OUTSIDE the app folder so that replacing
+# App/KidsMode during an update can never delete them.
+backupdir=/mnt/SDCARD/Saves/kidmode
+
 racfg=/mnt/SDCARD/RetroArch/.retroarch/retroarch.cfg
-rabackup="$appdir/retroarch.cfg.kidmode-backup"
+rabackup="$backupdir/retroarch.cfg.backup"
+legacy_rabackup="$appdir/retroarch.cfg.kidmode-backup"
 keymapcfg=/mnt/SDCARD/.tmp_update/config/keymap.json
-keymapbackup="$appdir/keymap.json.kidmode-backup"
-keymapnone="$appdir/.keymap-was-absent"
+keymapbackup="$backupdir/keymap.json.backup"
+keymapnone="$backupdir/keymap-was-absent"
 logfile=/mnt/SDCARD/.tmp_update/logs/kidmode.log
 
-timer_state="$appdir/timer_state.txt" # 3 lines: day / used seconds / bonus seconds
+timer_state="$backupdir/timer_state.txt" # 3 lines: day / used seconds / bonus seconds
 remaining_file=/tmp/kidmode_remaining
 ticker_pid_file=/tmp/kidmode_ticker.pid
 
@@ -193,7 +198,10 @@ ra_set() {
 
 apply_ra_lock() {
     [ -f "$racfg" ] || return 0
-    [ -f "$rabackup" ] || cp "$racfg" "$rabackup"
+    mkdir -p "$backupdir"
+    if [ ! -f "$rabackup" ] && [ ! -f "$legacy_rabackup" ]; then
+        cp "$racfg" "$rabackup"
+    fi
 
     ra_set kiosk_mode_enable true
     # Timer countdown arrives via RetroArch's OSD (SHOW_MSG); make sure
@@ -218,6 +226,11 @@ restore_ra_lock() {
         rm -f "$rabackup"
         sync
         log "RetroArch config restored."
+    elif [ -f "$legacy_rabackup" ]; then
+        cp "$legacy_rabackup" "$racfg"
+        rm -f "$legacy_rabackup"
+        sync
+        log "RetroArch config restored (legacy backup)."
     fi
 }
 
@@ -229,6 +242,7 @@ restore_ra_lock() {
 # it is restarted after the change. Original keymap restored on unlock.
 
 apply_keymap_override() {
+    mkdir -p "$backupdir"
     if [ -f "$keymapcfg" ]; then
         [ -f "$keymapbackup" ] || cp "$keymapcfg" "$keymapbackup"
         tmpkm=/tmp/kidmode_keymap.$$
@@ -293,6 +307,7 @@ state_bonus() {
 }
 
 state_write() { # $1 used, $2 bonus
+    mkdir -p "$backupdir"
     printf '%s\n%s\n%s\n' "$(date +%Y-%m-%d)" "$1" "$2" > "$timer_state.tmp"
     mv -f "$timer_state.tmp" "$timer_state"
 }

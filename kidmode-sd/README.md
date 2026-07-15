@@ -110,10 +110,14 @@ modified on the card:
   `/mnt/SDCARD/App/KidsMode/`, and the "Kid Mode" favorite
   (press X on it in Onion, or edit `Roms/favourite.json`).
 - **RetroArch settings stuck hidden:** copy
-  `App/KidsMode/retroarch.cfg.kidmode-backup` over
+  `Saves/kidmode/retroarch.cfg.backup` over
   `RetroArch/.retroarch/retroarch.cfg` (only exists while armed).
-- **Reset today's play time:** delete `App/KidsMode/timer_state.txt`
-  (day / used seconds / bonus seconds).
+- **MENU button stuck on exit-to-launcher:** restore
+  `Saves/kidmode/keymap.json.backup` to `.tmp_update/config/keymap.json`.
+- **Reset today's play time:** delete `Saves/kidmode/timer_state.txt`
+  (day / used seconds / bonus seconds). Backups/state live in
+  `Saves/kidmode/` so replacing `App/KidsMode` during updates never
+  deletes them.
 
 Fail-safes built in: if the kid UI binary is missing or crashes 3 times in a
 row, Kid Mode disarms itself and boots normal Onion rather than brick-loop.
